@@ -1,0 +1,15 @@
+target/
+.git/
+.idea/
+.vscode/
+*.iml
+.cursor/
+*.md
+!README.md
+application-local.yml
+application-local.yaml
+.env
+.env.local
+*.log
+.DS_Store
+.mvn/wrapper/maven-wrapper.jar

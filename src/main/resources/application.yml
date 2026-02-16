@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: basketbot
+  datasource:
+    url: jdbc:postgresql://localhost:5432/basketbot
+    username: basketbot
+    password: ${DB_PASSWORD:basketbot}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        default_schema: public
+        format_sql: true
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+# Токен задаётся через переменную окружения TELEGRAM_BOT_TOKEN или в application-local.yml
+telegram:
+  bot:
+    token: ${TELEGRAM_BOT_TOKEN:}
+    username: ${TELEGRAM_BOT_USERNAME:BasketBot}
+    # Напоминания о матчах: каждые 15 мин (cron). За 24 ч — опрос, за 3 ч — напоминание, после матча — запрос /result
+    reminder-cron: "0 */15 * * * ?"

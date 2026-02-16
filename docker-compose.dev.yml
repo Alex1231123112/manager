@@ -1,0 +1,24 @@
+# Только PostgreSQL для разработки (приложение запускаешь локально: mvn spring-boot:run или из IDE).
+# Запуск: docker compose -f docker-compose.dev.yml up -d
+# Подключение приложения: localhost:5432, user=basketbot, password=basketbot, db=basketbot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: basketbot-postgres
+    environment:
+      POSTGRES_DB: basketbot
+      POSTGRES_USER: basketbot
+      POSTGRES_PASSWORD: basketbot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U basketbot -d basketbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

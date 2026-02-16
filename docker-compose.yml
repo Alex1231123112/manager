@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: basketbot-postgres
+    environment:
+      POSTGRES_DB: basketbot
+      POSTGRES_USER: basketbot
+      POSTGRES_PASSWORD: basketbot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U basketbot -d basketbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: basketbot-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/basketbot
+      SPRING_DATASOURCE_USERNAME: basketbot
+      SPRING_DATASOURCE_PASSWORD: basketbot
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-BasketBot}
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
