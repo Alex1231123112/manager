@@ -71,6 +71,24 @@ public class PlayerService {
         return playerRepository.save(player);
     }
 
+    /** Отметить оплату: сброс долга по имени игрока. */
+    @Transactional
+    public Player clearDebt(Long teamId, String playerName) {
+        return setDebt(teamId, playerName, BigDecimal.ZERO);
+    }
+
+    /** Отметить оплату: сброс долга по id игрока (с проверкой team_id). */
+    @Transactional
+    public Player clearDebtByPlayerId(Long teamId, Long playerId) {
+        Player player = playerRepository.findById(playerId)
+                .orElseThrow(() -> new IllegalArgumentException("Игрок не найден."));
+        if (!player.getTeam().getId().equals(teamId)) {
+            throw new IllegalArgumentException("Игрок не из этой команды.");
+        }
+        player.setDebt(BigDecimal.ZERO);
+        return playerRepository.save(player);
+    }
+
     @Transactional
     public Player setPlayerStatus(Long teamId, String playerName, Player.PlayerStatus status) {
         if (status == null) {
@@ -87,5 +105,28 @@ public class PlayerService {
                 .orElseThrow(() -> new IllegalArgumentException("Игрок не найден: " + search));
         player.setPlayerStatus(status);
         return playerRepository.save(player);
+    }
+
+    @Transactional(readOnly = true)
+    public java.util.Optional<Player> findByIdAndTeamId(Long playerId, Long teamId) {
+        return playerRepository.findById(playerId)
+                .filter(p -> p.getTeam().getId().equals(teamId));
+    }
+
+    @Transactional
+    public Player updatePlayer(Long teamId, Long playerId, String name, Integer number, Player.PlayerStatus status) {
+        Player player = findByIdAndTeamId(playerId, teamId)
+                .orElseThrow(() -> new IllegalArgumentException("Игрок не найден."));
+        if (name != null && !name.trim().isEmpty()) player.setName(name.trim());
+        if (number != null) player.setNumber(number);
+        if (status != null) player.setPlayerStatus(status);
+        return playerRepository.save(player);
+    }
+
+    @Transactional
+    public void deletePlayer(Long teamId, Long playerId) {
+        Player player = findByIdAndTeamId(playerId, teamId)
+                .orElseThrow(() -> new IllegalArgumentException("Игрок не найден."));
+        playerRepository.delete(player);
     }
 }

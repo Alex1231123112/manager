@@ -1,99 +1,122 @@
 # BasketBot — Цифровой менеджер
 
-Telegram-бот для управления баскетбольной командой (учёт игроков, матчи, результаты, посты).
+Telegram-бот для управления баскетбольной командой: учёт игроков, матчи, результаты, посты, опросы, долги. Веб-админка — дашборд, состав, матчи, участники (роли), приглашения с QR, настройки.
 
 ## Требования
 
 - Java 17+
-- PostgreSQL (или Maven для сборки)
+- PostgreSQL (или Docker для полного стека)
 - Токен бота от [@BotFather](https://t.me/BotFather)
 
-## Быстрый старт
+## Быстрый старт (Docker)
 
-1. **Создай бота в Telegram:** напиши [@BotFather](https://t.me/BotFather), команда `/newbot`, сохрани токен.
+1. **Создай бота в Telegram:** [@BotFather](https://t.me/BotFather) → `/newbot` → сохрани токен и имя бота.
 
-2. **Подними PostgreSQL** и создай БД:
+2. **Создай `.env` в корне проекта** (файл в .gitignore):
+   ```
+   TELEGRAM_BOT_TOKEN=your_token_from_botfather
+   TELEGRAM_BOT_USERNAME=YourBotName
+   ```
+   Опционально: `ADMIN_PASSWORD` — пароль входа в веб-админку (по умолчанию `admin`).
+
+3. **Запуск:**
+   ```bash
+   docker compose up -d
+   ```
+   При первом запуске образы соберутся (приложение — Java/Spring Boot, админка — Next.js). Миграции БД применятся автоматически.
+
+4. **Открой:**
+   - **Веб-админка:** http://localhost:3000 — логин `admin`, пароль из `ADMIN_PASSWORD` или `admin`.
+   - **API/бэкенд:** http://localhost:8095 (здоровье: http://localhost:8095/actuator/health).
+   - **БД:** localhost:5432, пользователь `basketbot`, пароль `basketbot`, БД `basketbot`.
+
+5. **В админке:** выбери команду (или создай её в боте). Доступны: Дашборд, Состав, Матчи, Долги, **Участники** (имя, @username, роли), **Приглашения** (ссылка и QR), **Настройки** (канал для постов; **Telegram администратора** в формате @username — кто может создавать команду в боте без приглашения).
+
+6. **В боте:** напиши `/start`. Если твой @username указан в Настройках → «Доступ в бот» — создай команду (отправь название). Иначе попроси ссылку-приглашение у менеджера. Меню кнопок зависит от роли: капитан/админ видят «Приглашение», ввод результата, новый матч и т.д.; игрок — состав, опрос, долги, команды.
+
+**Подробные сценарии бота** — [docs/BOT_SCENARIOS.md](docs/BOT_SCENARIOS.md). **Проверка и чек-листы** — [docs/VERIFICATION.md](docs/VERIFICATION.md).
+
+## Запуск без Docker (разработка)
+
+1. **PostgreSQL:** создай БД и пользователя:
    ```sql
    CREATE DATABASE basketbot;
    CREATE USER basketbot WITH PASSWORD 'basketbot';
    GRANT ALL PRIVILEGES ON DATABASE basketbot TO basketbot;
    ```
 
-3. **Настрой переменные окружения** (или создай `src/main/resources/application-local.yml`):
-   - `TELEGRAM_BOT_TOKEN` — токен от BotFather (без него бот не стартует).
-   - `DB_PASSWORD` — пароль БД (по умолчанию `basketbot`).
+2. **Переменные:** `TELEGRAM_BOT_TOKEN` (обязательно), при необходимости `ADMIN_PASSWORD`, `SPRING_DATASOURCE_*` при отличии от дефолта.
 
-4. **Запуск:**
+3. **Запуск приложения:**
    ```bash
-   # С Maven в PATH:
    mvn spring-boot:run
-
-   # Или с Maven Wrapper (после mvn wrapper:wrapper):
-   ./mvnw spring-boot:run
    ```
+   API и встроенная админка (Thymeleaf): http://localhost:8080 (или порт из конфига).
 
-5. Напиши боту в Telegram команду `/start` — создай команду (отправь название), затем пользуйся меню:
-   - **Состав** — список игроков; фильтр: `/roster активные | травма | отпуск | не оплатил`; статус: `/setstatus Имя статус`
-   - **Добавить игрока** — затем: `Имя Номер` или `/addplayer Имя Номер`
-   - **Новый матч** — затем: `/newmatch Соперник`
-   - **Ввести результат** — затем: `/result наши их` (пост, картинка, кнопка «Опубликовать в канал»)
-   - **Опрос на игру** — затем: `/poll Текст` (Еду / Не еду / Опоздаю)
-   - **Долги** — список; выставить: `/setdebt Имя Сумма`; канал для постов: `/setchannel ID_канала`
+4. **Админка (Next.js)** отдельно, если нужна полная функциональность:
+   ```bash
+   cd admin-ui && npm ci && npm run dev
+   ```
+   Укажи в `admin-ui/.env.local`: `NEXT_PUBLIC_API_URL=http://localhost:8080` (или 8095 при прокси).
 
-   **Все сценарии работы бота** — в [docs/BOT_SCENARIOS.md](docs/BOT_SCENARIOS.md).
+## Запуск в контейнерах (детали)
 
-## Запуск в контейнерах
-
-Нужны Docker и Docker Compose.
-
-**Вариант 1: Всё в Docker (PostgreSQL + приложение)**
+**Полный стек (postgres + app + admin-ui):**
 
 ```bash
-export TELEGRAM_BOT_TOKEN=your_token_from_botfather
-docker compose up --build
+docker compose build --no-cache   # пересборка после изменений кода
+docker compose up -d
 ```
 
-Приложение будет на порту 8080, БД — 5432. Токен можно задать в `.env` (файл в .gitignore):
+- **postgres** — порт 5432.
+- **app** — Spring Boot, порт 8095 (внутри 8080); healthcheck по `/actuator/health`.
+- **admin-ui** — Next.js, порт 3000; запросы к API проксируются на `app:8080`.
 
+Токен и имя бота задаются в `.env`:
 ```
-TELEGRAM_BOT_TOKEN=your_token
+TELEGRAM_BOT_TOKEN=...
 TELEGRAM_BOT_USERNAME=BasketBot
 ```
 
-**Вариант 2: Только БД в контейнере (удобно для разработки)**
-
-Поднять PostgreSQL, приложение запускать локально (IDE или `mvn spring-boot:run`):
+**Только БД в Docker** (приложение локально):
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d
 ```
 
-Подключение: `localhost:5432`, пользователь `basketbot`, пароль `basketbot`, БД `basketbot`.
-
-**Сборка образа приложения без compose**
-
-```bash
-docker build -t basketbot:latest .
-docker run --rm -e TELEGRAM_BOT_TOKEN=... -e SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/basketbot -e SPRING_DATASOURCE_USERNAME=basketbot -e SPRING_DATASOURCE_PASSWORD=basketbot -p 8080:8080 basketbot:latest
-```
+Подключение к БД: `localhost:5432`, пользователь `basketbot`, пароль `basketbot`, БД `basketbot`.
 
 ## Структура проекта
 
 ```
-com.basketbot/
-├── config/       — конфигурация (в т.ч. Telegram)
-├── controller/   — REST (на будущее)
-├── model/        — JPA-сущности (Team, Player, Match)
-├── repository/   — Spring Data JPA
-├── service/      — бизнес-логика
-├── telegram/     — обработчики Telegram-бота
-└── util/
+Manager/
+├── src/main/java/com/basketbot/
+│   ├── config/       — конфигурация (Security, Telegram)
+│   ├── controller/   — REST API (admin, login)
+│   ├── model/        — JPA (Team, Player, Match, TeamMember, Invitation, SystemSetting)
+│   ├── repository/   — Spring Data JPA
+│   ├── service/      — бизнес-логика
+│   └── telegram/     — Telegram-бот (меню по ролям, /invite, приглашения)
+├── src/main/resources/db/migration/  — Flyway (V1–V8)
+├── admin-ui/         — веб-админка (Next.js): дашборд, участники, приглашения, настройки
+├── docs/             — OVERVIEW, VERIFICATION, BOT_SCENARIOS, ROLES и др.
+├── docker-compose.yml
+└── Dockerfile        — образ приложения (Java 17, Maven, Spring Boot)
 ```
 
 ## Стандарты разработки
 
 При любых изменениях в проекте действуют установки из [DEVELOPMENT.md](DEVELOPMENT.md): роль программиста (код, стек, продакшен) и аналитика (логика, сценарии, граничные случаи). В Cursor используется правило из `.cursor/rules/development-standards.mdc`.
 
-## Общая картина и план развития
+## Документация
 
-Краткое описание сделанного и план дальнейшего развития — в [docs/OVERVIEW.md](docs/OVERVIEW.md). Детальные чек-листы по фазам — в [ROADMAP.md](ROADMAP.md), полный понедельный план — в [План разработки](План%20разработки).
+| Документ | Описание |
+|----------|----------|
+| [docs/OVERVIEW.md](docs/OVERVIEW.md) | Общая картина, стек, план развития |
+| [docs/VERIFICATION.md](docs/VERIFICATION.md) | Проверка работы, обновление контейнеров, чек-листы бота и админки |
+| [docs/BOT_SCENARIOS.md](docs/BOT_SCENARIOS.md) | Сценарии работы бота |
+| [docs/ROLES.md](docs/ROLES.md) | Роли в боте и веб-админке |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Стандарты разработки |
+| [ROADMAP.md](ROADMAP.md) | Чек-листы по фазам |
+
+Резервное копирование БД — [docs/BACKUP.md](docs/BACKUP.md).

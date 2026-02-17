@@ -2,10 +2,11 @@
 target/
 !.mvn/wrapper/maven-wrapper.jar
 
-# IDE
+# IDE / Cursor
 .idea/
 *.iml
 .vscode/
+.cursor/
 *.swp
 *.swo
 

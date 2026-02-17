@@ -59,4 +59,30 @@ public class MatchService {
         match.setStatus(Match.Status.COMPLETED);
         return matchRepository.save(match);
     }
+
+    @Transactional(readOnly = true)
+    public Optional<Match> findNextScheduled(Long teamId) {
+        return matchRepository.findFirstByTeamIdAndStatusAndDateAfterOrderByDateAsc(
+                teamId, Match.Status.SCHEDULED, Instant.now());
+    }
+
+    @Transactional
+    public Match updateMatch(Long teamId, Long matchId, String opponent, Instant date, String location) {
+        Match match = matchRepository.findById(matchId)
+                .filter(m -> m.getTeam().getId().equals(teamId))
+                .orElseThrow(() -> new IllegalArgumentException("Матч не найден"));
+        if (opponent != null && !opponent.isBlank()) match.setOpponent(opponent.trim());
+        if (date != null) match.setDate(date);
+        if (location != null) match.setLocation(location.isBlank() ? null : location.trim());
+        return matchRepository.save(match);
+    }
+
+    @Transactional
+    public void cancelMatch(Long teamId, Long matchId) {
+        Match match = matchRepository.findById(matchId)
+                .filter(m -> m.getTeam().getId().equals(teamId))
+                .orElseThrow(() -> new IllegalArgumentException("Матч не найден"));
+        match.setStatus(Match.Status.CANCELLED);
+        matchRepository.save(match);
+    }
 }

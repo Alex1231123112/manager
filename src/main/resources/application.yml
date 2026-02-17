@@ -20,6 +20,24 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+# Админ-панель: логин/пароль (пароль лучше задать через ADMIN_PASSWORD)
+admin:
+  username: ${ADMIN_USERNAME:admin}
+  password: ${ADMIN_PASSWORD:admin}
+
+# URL новой админки (Next.js). Редирект с /admin на этот адрес.
+app:
+  admin-ui-url: ${ADMIN_UI_URL:http://localhost:3000}
+
+# Сессия для API админки. По умолчанию Lax — cookie работает по HTTP (localhost).
+# Для продакшена с разными доменами фронта и API: SESSION_COOKIE_SAME_SITE=none, SESSION_COOKIE_SECURE=true (HTTPS).
+server:
+  servlet:
+    session:
+      cookie:
+        same-site: ${SESSION_COOKIE_SAME_SITE:lax}
+        secure: ${SESSION_COOKIE_SECURE:false}
+
 # Токен задаётся через переменную окружения TELEGRAM_BOT_TOKEN или в application-local.yml
 telegram:
   bot:

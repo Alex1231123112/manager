@@ -22,14 +22,37 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/basketbot
       SPRING_DATASOURCE_USERNAME: basketbot
       SPRING_DATASOURCE_PASSWORD: basketbot
+      # ADMIN_* не задаём — Spring берёт дефолты из application.yml (admin/admin). Для своего пароля: в .env задать ADMIN_PASSWORD=... и добавить сюда ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-BasketBot}
     ports:
-      - "8080:8080"
+      - "8095:8080"   # API и Thymeleaf-админка: http://localhost:8095/admin
+
+  admin-ui:
+    build:
+      context: ./admin-ui
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ""
+    container_name: basketbot-admin-ui
+    environment:
+      API_BACKEND_URL: http://app:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      app:
+        condition: service_healthy
+    # Фронт вызывает /api/... (тот же origin), Next.js проксирует на app:8080
 
 volumes:
   postgres_data:

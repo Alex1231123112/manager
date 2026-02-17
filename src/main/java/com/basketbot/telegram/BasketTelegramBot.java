@@ -3,10 +3,16 @@ package com.basketbot.telegram;
 import com.basketbot.model.Match;
 import com.basketbot.model.Player;
 import com.basketbot.model.Team;
+import com.basketbot.model.Invitation;
+import com.basketbot.model.TeamMember;
+import com.basketbot.service.InvitationService;
 import com.basketbot.service.MatchImageService;
 import com.basketbot.service.MatchPostService;
+import com.basketbot.service.QrCodeService;
 import com.basketbot.service.MatchService;
 import com.basketbot.service.PlayerService;
+import com.basketbot.service.TeamMemberService;
+import com.basketbot.service.SystemSettingsService;
 import com.basketbot.service.TeamService;
 import com.basketbot.config.TelegramBotProperties;
 import jakarta.annotation.PostConstruct;
@@ -53,6 +59,7 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
     private static final String BTN_POLL = "Опрос на игру";
     private static final String BTN_DEBT = "Долги";
     private static final String BTN_COMMANDS = "Команды";
+    private static final String BTN_INVITE = "Приглашение";
     private static final List<String> POLL_OPTION_STRINGS = List.of("Еду", "Не еду", "Опоздаю");
     private static final List<InputPollOption> POLL_OPTIONS = POLL_OPTION_STRINGS.stream()
             .map(InputPollOption::new)
@@ -61,10 +68,14 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
     private final TelegramBotProperties properties;
     private final TelegramClient telegramClient;
     private final TeamService teamService;
+    private final TeamMemberService teamMemberService;
     private final PlayerService playerService;
     private final MatchService matchService;
     private final MatchPostService matchPostService;
     private final MatchImageService matchImageService;
+    private final SystemSettingsService systemSettingsService;
+    private final InvitationService invitationService;
+    private final QrCodeService qrCodeService;
 
     /** Ожидание названия команды после /start (chatId -> true) */
     private final Map<Long, Boolean> pendingTeamName = new ConcurrentHashMap<>();
@@ -72,17 +83,25 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
     public BasketTelegramBot(TelegramBotProperties properties,
                             org.telegram.telegrambots.meta.generics.TelegramClient telegramClient,
                             TeamService teamService,
+                            TeamMemberService teamMemberService,
                             PlayerService playerService,
                             MatchService matchService,
                             MatchPostService matchPostService,
-                            MatchImageService matchImageService) {
+                            MatchImageService matchImageService,
+                            SystemSettingsService systemSettingsService,
+                            InvitationService invitationService,
+                            QrCodeService qrCodeService) {
         this.properties = properties;
         this.telegramClient = telegramClient;
         this.teamService = teamService;
+        this.teamMemberService = teamMemberService;
         this.playerService = playerService;
         this.matchService = matchService;
         this.matchPostService = matchPostService;
         this.matchImageService = matchImageService;
+        this.systemSettingsService = systemSettingsService;
+        this.invitationService = invitationService;
+        this.qrCodeService = qrCodeService;
     }
 
     @Override
@@ -106,8 +125,11 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
                 new BotCommand("poll", "Опрос на игру: poll Текст вопроса"),
                 new BotCommand("debt", "Список долгов"),
                 new BotCommand("setdebt", "Выставить долг: setdebt Имя Сумма"),
+                new BotCommand("paid", "Отметить оплату: paid Имя"),
                 new BotCommand("setstatus", "Статус игрока: setstatus Имя статус"),
-                new BotCommand("setchannel", "Канал для постов: setchannel ID_канала")
+                new BotCommand("setchannel", "Канал для постов: setchannel ID_канала"),
+                new BotCommand("setrole", "Роль участника: setrole TelegramID ADMIN|CAPTAIN|PLAYER (только админ)"),
+                new BotCommand("invite", "Создать приглашение в команду (капитан и выше)")
         );
         try {
             telegramClient.execute(SetMyCommands.builder()
@@ -137,12 +159,20 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
 
         try {
             if (pendingTeamName.remove(chatId) != null) {
-                createTeamAndSendMenu(chatId, text);
+                var from = update.getMessage().getFrom();
+                long creatorId = from != null ? from.getId() : 0;
+                String creatorUsername = from != null ? from.getUserName() : null;
+                createTeamAndSendMenu(chatId, text, creatorId, creatorUsername);
                 return;
             }
 
-            if ("/start".equals(text)) {
-                handleStart(chatId);
+            if ("/start".equals(text) || text.startsWith("/start ")) {
+                var from = update.getMessage().getFrom();
+                long telegramUserId = from != null ? from.getId() : 0;
+                String telegramUserIdStr = String.valueOf(telegramUserId);
+                String startPayload = text.length() > 7 ? text.substring(7).trim() : "";
+                String telegramUsername = from != null ? from.getUserName() : null;
+                handleStart(chatId, telegramUserIdStr, startPayload, telegramUsername);
                 return;
             }
 
@@ -153,6 +183,12 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
             }
             Team team = teamOpt.get();
             Long teamId = team.getId();
+            var from = update.getMessage().getFrom();
+            long telegramUserId = from != null ? from.getId() : 0;
+            String telegramUserIdStr = String.valueOf(telegramUserId);
+            if (from != null && from.getUserName() != null) {
+                teamMemberService.ensureTelegramUsername(teamId, telegramUserIdStr, from.getUserName());
+            }
 
             if ("/addplayer".equals(text) || BTN_ADD_PLAYER.equals(text)) {
                 sendMessage(chatId, "Добавление игрока. Напиши: Имя Номер\nНапример: Иван Петров 23");
@@ -164,10 +200,6 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
             }
             if (text.startsWith("/roster ")) {
                 sendRoster(chatId, teamId, text.substring("/roster ".length()).trim());
-                return;
-            }
-            if (text.startsWith("/setstatus ")) {
-                setPlayerStatus(chatId, teamId, text.substring("/setstatus ".length()).trim());
                 return;
             }
             if ("/newmatch".equals(text) || BTN_NEW_MATCH.equals(text)) {
@@ -191,28 +223,52 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
                 return;
             }
             if ("/commands".equals(text) || BTN_COMMANDS.equals(text)) {
-                sendCommandsMenu(chatId);
+                sendCommandsMenu(chatId, teamId, telegramUserIdStr);
+                return;
+            }
+            if ("/invite".equals(text) || text.startsWith("/invite ") || BTN_INVITE.equals(text)) {
+                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
+                createInvite(chatId, teamId, text.startsWith("/invite ") ? text.substring(8).trim() : null);
+                return;
+            }
+            if (text.startsWith("/setrole ")) {
+                setRole(chatId, teamId, telegramUserIdStr, text.substring("/setrole ".length()).trim());
                 return;
             }
             if (text.startsWith("/setdebt ")) {
+                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
                 setDebt(chatId, teamId, text.substring("/setdebt ".length()).trim());
                 return;
             }
+            if (text.startsWith("/paid ")) {
+                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
+                markPaid(chatId, teamId, text.substring("/paid ".length()).trim());
+                return;
+            }
             if (text.startsWith("/setchannel ")) {
+                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
                 setChannel(chatId, teamId, text.substring("/setchannel ".length()).trim());
                 return;
             }
 
             if (text.startsWith("/addplayer ")) {
+                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
                 addPlayer(chatId, teamId, text.substring("/addplayer ".length()).trim());
                 return;
             }
             if (text.startsWith("/newmatch ")) {
+                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
                 newMatch(chatId, teamId, text.substring("/newmatch ".length()).trim());
                 return;
             }
             if (text.startsWith("/result ")) {
+                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
                 setResult(chatId, teamId, text.substring("/result ".length()).trim());
+                return;
+            }
+            if (text.startsWith("/setstatus ")) {
+                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
+                setPlayerStatus(chatId, teamId, text.substring("/setstatus ".length()).trim());
                 return;
             }
 
@@ -222,25 +278,103 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
         }
     }
 
-    private void handleStart(long chatId) {
+    private void handleStart(long chatId, String telegramUserIdStr, String startPayload, String telegramUsername) {
         Optional<Team> teamOpt = teamService.findByTelegramChatId(String.valueOf(chatId));
         if (teamOpt.isPresent()) {
             Team team = teamOpt.get();
-            sendMessageWithReplyKeyboard(chatId, "Привет! Команда: «" + team.getName() + "». Что делаем?", mainMenu());
+            if (telegramUsername != null && !telegramUsername.isBlank()) {
+                teamMemberService.ensureTelegramUsername(team.getId(), telegramUserIdStr, telegramUsername);
+            }
+            sendMessageWithReplyKeyboard(chatId, "Привет! Команда: «" + team.getName() + "». Что делаем?", mainMenu(team.getId(), telegramUserIdStr));
+        } else if (!startPayload.isEmpty()) {
+            handleStartWithInviteCode(chatId, telegramUserIdStr, startPayload, telegramUsername);
         } else {
+            if (!systemSettingsService.canCreateTeamWithoutInvite(telegramUserIdStr, telegramUsername)) {
+                sendMessage(chatId, "Создать команду может только администратор. Попросите ссылку-приглашение у менеджера команды.");
+                return;
+            }
             pendingTeamName.put(chatId, true);
             sendMessage(chatId, "Привет! Отправь название команды одним сообщением.\nНапример: БК Метеор");
         }
     }
 
-    private void createTeamAndSendMenu(long chatId, String teamName) {
+    /** Обработка /start CODE (приглашение). Вызывается из handleStart при непустом payload. */
+    private void handleStartWithInviteCode(long chatId, String telegramUserIdStr, String code, String telegramUsername) {
+        Optional<InvitationService.InvitationUseResult> result = invitationService.use(code, telegramUserIdStr, telegramUsername);
+        if (result.isPresent()) {
+            InvitationService.InvitationUseResult r = result.get();
+            sendMessage(chatId, "Вы добавлены в команду «" + r.teamName() + "». Роль: " + r.role() + ".\nЕсли бот в чате команды, напиши там /start.");
+        } else {
+            sendMessage(chatId, "Приглашение недействительно или уже использовано.");
+        }
+    }
+
+    private void createTeamAndSendMenu(long chatId, String teamName, long creatorTelegramUserId, String creatorUsername) {
         if (teamName.isBlank()) {
             sendMessage(chatId, "Название не может быть пустым. Отправь название команды.");
             pendingTeamName.put(chatId, true);
             return;
         }
         Team team = teamService.createTeam(teamName, String.valueOf(chatId));
-        sendMessageWithReplyKeyboard(chatId, "Команда «" + team.getName() + "» создана. Добавляй игроков и матчи.", mainMenu());
+        if (creatorTelegramUserId != 0) {
+            teamMemberService.addAsAdmin(team.getId(), String.valueOf(creatorTelegramUserId));
+            if (creatorUsername != null && !creatorUsername.isBlank()) {
+                teamMemberService.ensureTelegramUsername(team.getId(), String.valueOf(creatorTelegramUserId), creatorUsername);
+            }
+        }
+        sendMessageWithReplyKeyboard(chatId, "Команда «" + team.getName() + "» создана. Добавляй игроков и матчи.", mainMenu(team.getId(), String.valueOf(creatorTelegramUserId)));
+    }
+
+    private void createInvite(long chatId, Long teamId, String roleStr) {
+        TeamMember.Role role = TeamMember.Role.PLAYER;
+        if (roleStr != null && !roleStr.isBlank()) {
+            try {
+                role = TeamMember.Role.valueOf(roleStr.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                sendMessage(chatId, "Роль должна быть: PLAYER, CAPTAIN или ADMIN. Используй по умолчанию PLAYER.");
+                return;
+            }
+        }
+        Invitation inv = invitationService.create(teamId, role, 7);
+        String link = invitationService.buildInviteLink(inv.getCode());
+        byte[] png = qrCodeService.generatePng(link, 256);
+        sendPhoto(chatId, png, "invite.png");
+        sendMessage(chatId, "Ссылка для приглашения (действует 7 дней):\n" + link);
+    }
+
+    /** Проверка прав: минимум капитан. При отказе отправляет сообщение и возвращает false. */
+    private boolean requireCaptain(long chatId, Long teamId, String telegramUserIdStr) {
+        try {
+            teamMemberService.requireAtLeast(teamId, telegramUserIdStr, TeamMember.Role.CAPTAIN);
+            return true;
+        } catch (SecurityException e) {
+            sendMessage(chatId, e.getMessage());
+            return false;
+        }
+    }
+
+    private void setRole(long chatId, Long teamId, String callerTelegramUserId, String args) {
+        String[] parts = args.trim().split("\\s+");
+        if (parts.length < 2) {
+            sendMessage(chatId, "Формат: /setrole TelegramID роль\nРоли: ADMIN, CAPTAIN, PLAYER\nПример: /setrole 123456789 CAPTAIN");
+            return;
+        }
+        String targetIdStr = parts[0];
+        TeamMember.Role role;
+        try {
+            role = TeamMember.Role.valueOf(parts[1].toUpperCase());
+        } catch (IllegalArgumentException e) {
+            sendMessage(chatId, "Роль должна быть: ADMIN, CAPTAIN или PLAYER.");
+            return;
+        }
+        try {
+            teamMemberService.setRole(teamId, callerTelegramUserId, targetIdStr, role);
+            sendMessage(chatId, "Роль назначена: " + targetIdStr + " — " + role);
+        } catch (SecurityException e) {
+            sendMessage(chatId, e.getMessage());
+        } catch (IllegalArgumentException e) {
+            sendMessage(chatId, e.getMessage());
+        }
     }
 
     private void addPlayer(long chatId, Long teamId, String args) {
@@ -406,6 +540,10 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
             handleCmdCallback(chatId, callbackId, data.substring("cmd:".length()));
             return;
         }
+        if (data.startsWith("paid:")) {
+            handlePaidCallback(chatId, callbackId, data.substring("paid:".length()), callbackQuery.getFrom() != null ? String.valueOf(callbackQuery.getFrom().getId()) : null);
+            return;
+        }
         if (!data.startsWith("publish:")) return;
 
         Optional<Team> teamOpt = teamService.findByTelegramChatId(String.valueOf(chatId));
@@ -414,6 +552,15 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
             return;
         }
         Team team = teamOpt.get();
+        String callerUserIdStr = callbackQuery.getFrom() != null ? String.valueOf(callbackQuery.getFrom().getId()) : null;
+        if (callerUserIdStr != null) {
+            try {
+                teamMemberService.requireAtLeast(team.getId(), callerUserIdStr, TeamMember.Role.CAPTAIN);
+            } catch (SecurityException e) {
+                answerCallback(callbackId, e.getMessage(), true);
+                return;
+            }
+        }
         if (team.getChannelTelegramChatId() == null || team.getChannelTelegramChatId().isBlank()) {
             answerCallback(callbackId, "Сначала укажи канал: /setchannel ID_канала", true);
             return;
@@ -470,7 +617,10 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
         sendMessage(chatId, text);
     }
 
-    private void sendCommandsMenu(long chatId) {
+    /** Список команд по роли: капитан и выше видят setstatus, setchannel, setdebt; игрок — только состав и фильтры. */
+    private void sendCommandsMenu(long chatId, Long teamId, String telegramUserIdStr) {
+        TeamMember.Role role = teamMemberService.getRole(teamId, telegramUserIdStr).orElse(TeamMember.Role.PLAYER);
+        boolean captainOrAdmin = TeamMember.roleLevel(role) >= TeamMember.roleLevel(TeamMember.Role.CAPTAIN);
         List<InlineKeyboardRow> rows = new ArrayList<>();
         rows.add(new InlineKeyboardRow(
                 InlineKeyboardButton.builder().text("Состав (все)").callbackData("roster:ALL").build(),
@@ -481,13 +631,15 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
                 InlineKeyboardButton.builder().text("Отпуск").callbackData("roster:VACATION").build(),
                 InlineKeyboardButton.builder().text("Не оплатил").callbackData("roster:NOT_PAID").build()
         ));
-        rows.add(new InlineKeyboardRow(
-                InlineKeyboardButton.builder().text("Изменить статус").callbackData("cmd:setstatus").build(),
-                InlineKeyboardButton.builder().text("Настроить канал").callbackData("cmd:setchannel").build(),
-                InlineKeyboardButton.builder().text("Выставить долг").callbackData("cmd:setdebt").build()
-        ));
+        if (captainOrAdmin) {
+            rows.add(new InlineKeyboardRow(
+                    InlineKeyboardButton.builder().text("Изменить статус").callbackData("cmd:setstatus").build(),
+                    InlineKeyboardButton.builder().text("Настроить канал").callbackData("cmd:setchannel").build(),
+                    InlineKeyboardButton.builder().text("Выставить долг").callbackData("cmd:setdebt").build()
+            ));
+        }
         InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(rows).build();
-        sendMessage(chatId, "Выбери команду (все действия есть и в кнопках меню):", markup);
+        sendMessage(chatId, "Выбери команду (доступно по твоей роли):", markup);
     }
 
     private void sendMessageWithPublishButton(long chatId, long matchId) {
@@ -552,7 +704,59 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
         for (Player p : debtors) {
             sb.append("• ").append(p.getName()).append(" — ").append(p.getDebt()).append(" ₽\n");
         }
-        sendMessage(chatId, sb.toString() + "\nИзменить: /setdebt Имя Сумма");
+        sb.append("\nОтметить оплату: /paid Имя или кнопка ниже.\nИзменить долг: /setdebt Имя Сумма");
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        for (Player p : debtors) {
+            rows.add(new InlineKeyboardRow(
+                    InlineKeyboardButton.builder().text("Оплатил: " + p.getName()).callbackData("paid:" + p.getId()).build()
+            ));
+        }
+        InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(rows).build();
+        sendMessage(chatId, sb.toString(), markup);
+    }
+
+    private void handlePaidCallback(long chatId, String callbackId, String playerIdStr, String callerUserIdStr) {
+        Optional<Team> teamOpt = teamService.findByTelegramChatId(String.valueOf(chatId));
+        if (teamOpt.isEmpty()) {
+            answerCallback(callbackId, "Команда не найдена.", true);
+            return;
+        }
+        Team team = teamOpt.get();
+        if (callerUserIdStr != null) {
+            try {
+                teamMemberService.requireAtLeast(team.getId(), callerUserIdStr, TeamMember.Role.CAPTAIN);
+            } catch (SecurityException e) {
+                answerCallback(callbackId, e.getMessage(), true);
+                return;
+            }
+        }
+        long playerId;
+        try {
+            playerId = Long.parseLong(playerIdStr);
+        } catch (NumberFormatException e) {
+            answerCallback(callbackId, "Ошибка данных.", true);
+            return;
+        }
+        try {
+            Player p = playerService.clearDebtByPlayerId(team.getId(), playerId);
+            answerCallback(callbackId, "Долг снят: " + p.getName());
+            sendDebtList(chatId, team.getId());
+        } catch (IllegalArgumentException e) {
+            answerCallback(callbackId, e.getMessage(), true);
+        }
+    }
+
+    private void markPaid(long chatId, Long teamId, String name) {
+        if (name == null || name.isBlank()) {
+            sendMessage(chatId, "Формат: /paid Имя\nНапример: /paid Иван Петров");
+            return;
+        }
+        try {
+            Player p = playerService.clearDebt(teamId, name.trim());
+            sendMessage(chatId, "Оплата отмечена: " + p.getName());
+        } catch (IllegalArgumentException e) {
+            sendMessage(chatId, e.getMessage());
+        }
     }
 
     private void setDebt(long chatId, Long teamId, String args) {
@@ -577,12 +781,23 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
         }
     }
 
-    private ReplyKeyboardMarkup mainMenu() {
+    /** Меню кнопок по роли: капитан и выше видят добавление игрока, матчи, результат, приглашение; игрок — только состав, опрос, долги, команды. */
+    private ReplyKeyboardMarkup mainMenu(Long teamId, String telegramUserIdStr) {
+        TeamMember.Role role = teamMemberService.getRole(teamId, telegramUserIdStr).orElse(TeamMember.Role.PLAYER);
+        boolean captainOrAdmin = TeamMember.roleLevel(role) >= TeamMember.roleLevel(TeamMember.Role.CAPTAIN);
         List<KeyboardRow> rows = new ArrayList<>();
-        rows.add(new KeyboardRow(BTN_ROSTER, BTN_ADD_PLAYER));
-        rows.add(new KeyboardRow(BTN_NEW_MATCH, BTN_RESULT));
+        if (captainOrAdmin) {
+            rows.add(new KeyboardRow(BTN_ROSTER, BTN_ADD_PLAYER));
+            rows.add(new KeyboardRow(BTN_NEW_MATCH, BTN_RESULT));
+        } else {
+            rows.add(new KeyboardRow(BTN_ROSTER));
+        }
         rows.add(new KeyboardRow(BTN_POLL, BTN_DEBT));
-        rows.add(new KeyboardRow(BTN_COMMANDS));
+        if (captainOrAdmin) {
+            rows.add(new KeyboardRow(BTN_COMMANDS, BTN_INVITE));
+        } else {
+            rows.add(new KeyboardRow(BTN_COMMANDS));
+        }
         ReplyKeyboardMarkup markup = new ReplyKeyboardMarkup(rows);
         markup.setResizeKeyboard(true);
         return markup;
