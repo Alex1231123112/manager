@@ -60,7 +60,8 @@ public class InvitationService {
     }
 
     /**
-     * Использовать приглашение: добавить пользователя в команду с указанной ролью и удалить приглашение.
+     * Использовать приглашение: добавить пользователя в команду с указанной ролью.
+     * Приглашение не удаляется — по одной ссылке могут перейти несколько человек (массовое добавление).
      *
      * @param telegramUsername опционально — @username из Telegram для отображения в админке
      * @return имя команды и роль при успехе
@@ -79,7 +80,6 @@ public class InvitationService {
             teamMemberService.ensureTelegramUsername(teamId, telegramUserId, telegramUsername);
         }
         String teamName = inv.getTeam().getName();
-        invitationRepository.delete(inv);
         return Optional.of(new InvitationUseResult(teamName, role));
     }
 

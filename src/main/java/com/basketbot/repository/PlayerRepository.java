@@ -17,4 +17,6 @@ public interface PlayerRepository extends JpaRepository<Player, Long> {
     List<Player> findByTeamIdAndPlayerStatus(Long teamId, Player.PlayerStatus status);
 
     List<Player> findByTeamIdAndDebtGreaterThan(Long teamId, BigDecimal minDebt);
+
+    java.util.Optional<Player> findByTeamIdAndTelegramId(Long teamId, String telegramId);
 }

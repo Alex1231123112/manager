@@ -78,7 +78,7 @@ class AdminApiInvitationsTest {
         MockHttpSession session = loginAndSelectTeam();
         mockMvc.perform(post("/api/admin/invitations")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"CAPTAIN\",\"expiresInDays\":14}")
+                        .content("{\"role\":\"ADMIN\",\"expiresInDays\":14}")
                         .session(session))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.invitation.code").isNotEmpty());
@@ -86,7 +86,7 @@ class AdminApiInvitationsTest {
         mockMvc.perform(get("/api/admin/invitations").session(session))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].role").value("CAPTAIN"));
+                .andExpect(jsonPath("$[0].role").value("ADMIN"));
     }
 
     @Test

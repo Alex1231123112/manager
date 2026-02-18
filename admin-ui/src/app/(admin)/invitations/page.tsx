@@ -11,7 +11,6 @@ import type {
 
 const ROLE_LABELS: Record<string, string> = {
   ADMIN: "Админ",
-  CAPTAIN: "Капитан",
   PLAYER: "Игрок",
 };
 
@@ -95,7 +94,7 @@ export default function InvitationsPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold text-zinc-800">Приглашения в команду</h1>
         <p className="mt-1 text-sm text-zinc-500">
-          Создайте ссылку или QR-код. Новый участник переходит по ссылке или вводит в боте /start CODE и добавляется в команду с выбранной ролью.
+          Одно приглашение — по одной ссылке могут перейти несколько человек (массовое добавление). Участник переходит по ссылке или вводит в боте /start CODE и добавляется в команду с выбранной ролью. Ссылка действует до указанной даты.
         </p>
       </div>
       {message && (
@@ -118,7 +117,6 @@ export default function InvitationsPage() {
             className="rounded-lg border border-zinc-300 px-3 py-2"
           >
             <option value="PLAYER">{ROLE_LABELS.PLAYER}</option>
-            <option value="CAPTAIN">{ROLE_LABELS.CAPTAIN}</option>
             <option value="ADMIN">{ROLE_LABELS.ADMIN}</option>
           </select>
         </div>

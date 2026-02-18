@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 
 @Service
 public class PlayerService {
@@ -108,9 +109,34 @@ public class PlayerService {
     }
 
     @Transactional(readOnly = true)
-    public java.util.Optional<Player> findByIdAndTeamId(Long playerId, Long teamId) {
+    public Optional<Player> findByIdAndTeamId(Long playerId, Long teamId) {
         return playerRepository.findById(playerId)
                 .filter(p -> p.getTeam().getId().equals(teamId));
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<Player> findByTeamIdAndTelegramId(Long teamId, String telegramId) {
+        if (telegramId == null || telegramId.isBlank()) return Optional.empty();
+        return playerRepository.findByTeamIdAndTelegramId(teamId, telegramId.trim());
+    }
+
+    /** Создать или обновить запись игрока, привязанную к участнику команды (по telegram_user_id). */
+    @Transactional
+    public Player upsertPlayerForMember(Long teamId, String telegramUserId, String name, Integer number,
+                                        Player.PlayerStatus status, BigDecimal debt, boolean active) {
+        Team team = teamRepository.getReferenceById(teamId);
+        Player player = playerRepository.findByTeamIdAndTelegramId(teamId, telegramUserId).orElseGet(() -> {
+            Player p = new Player();
+            p.setTeam(team);
+            p.setTelegramId(telegramUserId);
+            return p;
+        });
+        if (name != null && !name.isBlank()) player.setName(name.trim());
+        if (number != null) player.setNumber(number);
+        if (status != null) player.setPlayerStatus(status);
+        if (debt != null) player.setDebt(debt);
+        player.setActive(active);
+        return playerRepository.save(player);
     }
 
     @Transactional

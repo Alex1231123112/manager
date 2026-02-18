@@ -1,0 +1,2 @@
+-- Деактивация участника вместо удаления
+ALTER TABLE team_members ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;

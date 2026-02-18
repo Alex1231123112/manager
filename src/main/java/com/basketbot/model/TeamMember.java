@@ -18,7 +18,6 @@ public class TeamMember {
 
     public enum Role {
         ADMIN,
-        CAPTAIN,
         PLAYER
     }
 
@@ -42,6 +41,9 @@ public class TeamMember {
     @Column(nullable = false, length = 20)
     @Enumerated(EnumType.STRING)
     private Role role = Role.PLAYER;
+
+    @Column(name = "is_active", nullable = false)
+    private boolean active = true;
 
     public Long getId() {
         return id;
@@ -91,12 +93,19 @@ public class TeamMember {
         this.role = role != null ? role : Role.PLAYER;
     }
 
-    /** Уровень роли для сравнения (ADMIN > CAPTAIN > PLAYER). */
+    public boolean isActive() {
+        return active;
+    }
+
+    public void setActive(boolean active) {
+        this.active = active;
+    }
+
+    /** Уровень роли для сравнения (ADMIN > PLAYER). */
     public static int roleLevel(Role r) {
         if (r == null) return 0;
         return switch (r) {
-            case ADMIN -> 3;
-            case CAPTAIN -> 2;
+            case ADMIN -> 2;
             case PLAYER -> 1;
         };
     }

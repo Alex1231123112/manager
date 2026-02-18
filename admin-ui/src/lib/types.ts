@@ -59,6 +59,10 @@ export interface MemberDto {
   telegramUsername: string;
   displayName: string;
   role: string;
+  number: number | null;
+  status: string;
+  debt: number | string;
+  isActive: boolean;
 }
 
 export interface InvitationDto {

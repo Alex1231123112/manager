@@ -3,12 +3,7 @@ package com.basketbot.telegram;
 import com.basketbot.model.Match;
 import com.basketbot.model.Player;
 import com.basketbot.model.Team;
-import com.basketbot.model.Invitation;
-import com.basketbot.model.TeamMember;
 import com.basketbot.service.InvitationService;
-import com.basketbot.service.MatchImageService;
-import com.basketbot.service.MatchPostService;
-import com.basketbot.service.QrCodeService;
 import com.basketbot.service.MatchService;
 import com.basketbot.service.PlayerService;
 import com.basketbot.service.TeamMemberService;
@@ -21,15 +16,10 @@ import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.longpolling.starter.SpringLongPollingBot;
 import org.telegram.telegrambots.longpolling.util.LongPollingSingleThreadUpdateConsumer;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
-import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
 import org.telegram.telegrambots.meta.api.methods.polls.SendPoll;
-import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.polls.input.InputPollOption;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardRow;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands;
@@ -38,8 +28,6 @@ import org.telegram.telegrambots.meta.api.objects.commands.BotCommand;
 import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeDefault;
 import org.telegram.telegrambots.meta.generics.TelegramClient;
 
-import java.io.ByteArrayInputStream;
-import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -52,15 +40,18 @@ import java.util.concurrent.ConcurrentHashMap;
 @ConditionalOnProperty(name = "telegram.bot.token")
 public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingleThreadUpdateConsumer {
 
+    private static final String BTN_SCHEDULE = "Расписание";
     private static final String BTN_ROSTER = "Состав";
-    private static final String BTN_ADD_PLAYER = "Добавить игрока";
-    private static final String BTN_NEW_MATCH = "Новый матч";
-    private static final String BTN_RESULT = "Ввести результат";
+    private static final String BTN_PROFILE = "Мой профиль";
+    private static final String BTN_LEAVE = "Выйти из команды";
     private static final String BTN_POLL = "Опрос на игру";
-    private static final String BTN_DEBT = "Долги";
-    private static final String BTN_COMMANDS = "Команды";
-    private static final String BTN_INVITE = "Приглашение";
     private static final List<String> POLL_OPTION_STRINGS = List.of("Еду", "Не еду", "Опоздаю");
+    private static final Map<Player.PlayerStatus, String> STATUS_LABEL = Map.of(
+            Player.PlayerStatus.ACTIVE, "активен",
+            Player.PlayerStatus.INJURY, "травма",
+            Player.PlayerStatus.VACATION, "отпуск",
+            Player.PlayerStatus.NOT_PAID, "не оплатил"
+    );
     private static final List<InputPollOption> POLL_OPTIONS = POLL_OPTION_STRINGS.stream()
             .map(InputPollOption::new)
             .toList();
@@ -69,39 +60,34 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
     private final TelegramClient telegramClient;
     private final TeamService teamService;
     private final TeamMemberService teamMemberService;
-    private final PlayerService playerService;
     private final MatchService matchService;
-    private final MatchPostService matchPostService;
-    private final MatchImageService matchImageService;
+    private final PlayerService playerService;
     private final SystemSettingsService systemSettingsService;
     private final InvitationService invitationService;
-    private final QrCodeService qrCodeService;
 
     /** Ожидание названия команды после /start (chatId -> true) */
     private final Map<Long, Boolean> pendingTeamName = new ConcurrentHashMap<>();
+    /** Ожидание нового имени для профиля (chatId -> teamId) */
+    private final Map<Long, Long> pendingProfileTeamId = new ConcurrentHashMap<>();
+    /** Ожидание подтверждения выхода (chatId -> teamId) */
+    private final Map<Long, Long> pendingLeaveTeamId = new ConcurrentHashMap<>();
 
     public BasketTelegramBot(TelegramBotProperties properties,
                             org.telegram.telegrambots.meta.generics.TelegramClient telegramClient,
                             TeamService teamService,
                             TeamMemberService teamMemberService,
-                            PlayerService playerService,
                             MatchService matchService,
-                            MatchPostService matchPostService,
-                            MatchImageService matchImageService,
+                            PlayerService playerService,
                             SystemSettingsService systemSettingsService,
-                            InvitationService invitationService,
-                            QrCodeService qrCodeService) {
+                            InvitationService invitationService) {
         this.properties = properties;
         this.telegramClient = telegramClient;
         this.teamService = teamService;
         this.teamMemberService = teamMemberService;
-        this.playerService = playerService;
         this.matchService = matchService;
-        this.matchPostService = matchPostService;
-        this.matchImageService = matchImageService;
+        this.playerService = playerService;
         this.systemSettingsService = systemSettingsService;
         this.invitationService = invitationService;
-        this.qrCodeService = qrCodeService;
     }
 
     @Override
@@ -117,19 +103,12 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
     @PostConstruct
     public void registerBotCommands() {
         List<BotCommand> commands = List.of(
-                new BotCommand("start", "Создать команду или главное меню"),
-                new BotCommand("roster", "Состав (или: roster активные|травма|отпуск|не оплатил)"),
-                new BotCommand("addplayer", "Добавить игрока: addplayer Имя Номер"),
-                new BotCommand("newmatch", "Новый матч: newmatch Соперник"),
-                new BotCommand("result", "Ввести результат: result наши их"),
-                new BotCommand("poll", "Опрос на игру: poll Текст вопроса"),
-                new BotCommand("debt", "Список долгов"),
-                new BotCommand("setdebt", "Выставить долг: setdebt Имя Сумма"),
-                new BotCommand("paid", "Отметить оплату: paid Имя"),
-                new BotCommand("setstatus", "Статус игрока: setstatus Имя статус"),
-                new BotCommand("setchannel", "Канал для постов: setchannel ID_канала"),
-                new BotCommand("setrole", "Роль участника: setrole TelegramID ADMIN|CAPTAIN|PLAYER (только админ)"),
-                new BotCommand("invite", "Создать приглашение в команду (капитан и выше)")
+                new BotCommand("start", "Создать команду или войти по приглашению"),
+                new BotCommand("schedule", "Расписание игр"),
+                new BotCommand("roster", "Состав команды"),
+                new BotCommand("profile", "Редактировать своё имя"),
+                new BotCommand("leave", "Выйти из команды"),
+                new BotCommand("poll", "Опрос на игру: poll Текст вопроса")
         );
         try {
             telegramClient.execute(SetMyCommands.builder()
@@ -176,6 +155,35 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
                 return;
             }
 
+            Long teamIdForProfile = pendingProfileTeamId.remove(chatId);
+            if (teamIdForProfile != null) {
+                var from = update.getMessage().getFrom();
+                String telegramUserIdStr = from != null ? String.valueOf(from.getId()) : null;
+                if (telegramUserIdStr != null && !text.isBlank()) {
+                    teamMemberService.updateDisplayName(teamIdForProfile, telegramUserIdStr, text);
+                    sendMessageWithReplyKeyboard(chatId, "Имя обновлено: " + text.trim(), mainMenu());
+                } else {
+                    sendMessage(chatId, "Имя не может быть пустым. Нажми «Мой профиль» и отправь новое имя.");
+                }
+                return;
+            }
+
+            Long teamIdForLeave = pendingLeaveTeamId.remove(chatId);
+            if (teamIdForLeave != null) {
+                if ("ДА".equalsIgnoreCase(text.trim())) {
+                    var from = update.getMessage().getFrom();
+                    String telegramUserIdStr = from != null ? String.valueOf(from.getId()) : null;
+                    if (telegramUserIdStr != null) {
+                        teamMemberService.leaveTeam(teamIdForLeave, telegramUserIdStr);
+                        sendMessage(chatId, "Вы вышли из команды. Чтобы снова вступить, нужна новая ссылка-приглашение от админа.");
+                    }
+                } else {
+                    pendingLeaveTeamId.put(chatId, teamIdForLeave);
+                    sendMessage(chatId, "Выход отменён. Напиши ДА, если точно хочешь выйти из команды.");
+                }
+                return;
+            }
+
             Optional<Team> teamOpt = teamService.findByTelegramChatId(String.valueOf(chatId));
             if (teamOpt.isEmpty()) {
                 sendMessage(chatId, "Сначала создай команду: отправь /start и затем название команды.");
@@ -184,30 +192,27 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
             Team team = teamOpt.get();
             Long teamId = team.getId();
             var from = update.getMessage().getFrom();
-            long telegramUserId = from != null ? from.getId() : 0;
-            String telegramUserIdStr = String.valueOf(telegramUserId);
-            if (from != null && from.getUserName() != null) {
+            String telegramUserIdStr = from != null ? String.valueOf(from.getId()) : null;
+            if (from != null && from.getUserName() != null && telegramUserIdStr != null) {
                 teamMemberService.ensureTelegramUsername(teamId, telegramUserIdStr, from.getUserName());
             }
 
-            if ("/addplayer".equals(text) || BTN_ADD_PLAYER.equals(text)) {
-                sendMessage(chatId, "Добавление игрока. Напиши: Имя Номер\nНапример: Иван Петров 23");
+            if ("/schedule".equals(text) || BTN_SCHEDULE.equals(text)) {
+                sendSchedule(chatId, teamId);
                 return;
             }
             if ("/roster".equals(text) || BTN_ROSTER.equals(text)) {
-                sendRoster(chatId, teamId, null);
+                sendRoster(chatId, teamId);
                 return;
             }
-            if (text.startsWith("/roster ")) {
-                sendRoster(chatId, teamId, text.substring("/roster ".length()).trim());
+            if ("/profile".equals(text) || BTN_PROFILE.equals(text)) {
+                pendingProfileTeamId.put(chatId, teamId);
+                sendMessage(chatId, "Напиши новое имя (как отображать в составе):");
                 return;
             }
-            if ("/newmatch".equals(text) || BTN_NEW_MATCH.equals(text)) {
-                sendMessage(chatId, "Создание матча. Напиши: /newmatch Соперник\nНапример: /newmatch ЦСКА");
-                return;
-            }
-            if ("/result".equals(text) || BTN_RESULT.equals(text)) {
-                sendResultHint(chatId, teamId);
+            if ("/leave".equals(text) || BTN_LEAVE.equals(text)) {
+                pendingLeaveTeamId.put(chatId, teamId);
+                sendMessage(chatId, "Выйти из команды? Напиши ДА для подтверждения.");
                 return;
             }
             if ("/poll".equals(text) || BTN_POLL.equals(text)) {
@@ -218,61 +223,8 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
                 sendPoll(chatId, text.substring("/poll ".length()).trim());
                 return;
             }
-            if ("/debt".equals(text) || BTN_DEBT.equals(text)) {
-                sendDebtList(chatId, teamId);
-                return;
-            }
-            if ("/commands".equals(text) || BTN_COMMANDS.equals(text)) {
-                sendCommandsMenu(chatId, teamId, telegramUserIdStr);
-                return;
-            }
-            if ("/invite".equals(text) || text.startsWith("/invite ") || BTN_INVITE.equals(text)) {
-                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
-                createInvite(chatId, teamId, text.startsWith("/invite ") ? text.substring(8).trim() : null);
-                return;
-            }
-            if (text.startsWith("/setrole ")) {
-                setRole(chatId, teamId, telegramUserIdStr, text.substring("/setrole ".length()).trim());
-                return;
-            }
-            if (text.startsWith("/setdebt ")) {
-                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
-                setDebt(chatId, teamId, text.substring("/setdebt ".length()).trim());
-                return;
-            }
-            if (text.startsWith("/paid ")) {
-                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
-                markPaid(chatId, teamId, text.substring("/paid ".length()).trim());
-                return;
-            }
-            if (text.startsWith("/setchannel ")) {
-                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
-                setChannel(chatId, teamId, text.substring("/setchannel ".length()).trim());
-                return;
-            }
 
-            if (text.startsWith("/addplayer ")) {
-                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
-                addPlayer(chatId, teamId, text.substring("/addplayer ".length()).trim());
-                return;
-            }
-            if (text.startsWith("/newmatch ")) {
-                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
-                newMatch(chatId, teamId, text.substring("/newmatch ".length()).trim());
-                return;
-            }
-            if (text.startsWith("/result ")) {
-                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
-                setResult(chatId, teamId, text.substring("/result ".length()).trim());
-                return;
-            }
-            if (text.startsWith("/setstatus ")) {
-                if (!requireCaptain(chatId, teamId, telegramUserIdStr)) return;
-                setPlayerStatus(chatId, teamId, text.substring("/setstatus ".length()).trim());
-                return;
-            }
-
-            sendMessage(chatId, "Неизвестная команда. Используй кнопки меню или /start.");
+            sendMessageWithReplyKeyboard(chatId, "Используй кнопки меню или команды: /schedule, /roster, /profile, /leave, /poll Текст.", mainMenu());
         } catch (Exception e) {
             sendMessage(chatId, "Ошибка: " + e.getMessage());
         }
@@ -285,7 +237,7 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
             if (telegramUsername != null && !telegramUsername.isBlank()) {
                 teamMemberService.ensureTelegramUsername(team.getId(), telegramUserIdStr, telegramUsername);
             }
-            sendMessageWithReplyKeyboard(chatId, "Привет! Команда: «" + team.getName() + "». Что делаем?", mainMenu(team.getId(), telegramUserIdStr));
+            sendMessageWithReplyKeyboard(chatId, "Привет! Команда: «" + team.getName() + "». Расписание, состав, мой профиль, выход из команды, опрос — кнопки ниже.", mainMenu());
         } else if (!startPayload.isEmpty()) {
             handleStartWithInviteCode(chatId, telegramUserIdStr, startPayload, telegramUsername);
         } else {
@@ -322,345 +274,11 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
                 teamMemberService.ensureTelegramUsername(team.getId(), String.valueOf(creatorTelegramUserId), creatorUsername);
             }
         }
-        sendMessageWithReplyKeyboard(chatId, "Команда «" + team.getName() + "» создана. Добавляй игроков и матчи.", mainMenu(team.getId(), String.valueOf(creatorTelegramUserId)));
-    }
-
-    private void createInvite(long chatId, Long teamId, String roleStr) {
-        TeamMember.Role role = TeamMember.Role.PLAYER;
-        if (roleStr != null && !roleStr.isBlank()) {
-            try {
-                role = TeamMember.Role.valueOf(roleStr.toUpperCase());
-            } catch (IllegalArgumentException e) {
-                sendMessage(chatId, "Роль должна быть: PLAYER, CAPTAIN или ADMIN. Используй по умолчанию PLAYER.");
-                return;
-            }
-        }
-        Invitation inv = invitationService.create(teamId, role, 7);
-        String link = invitationService.buildInviteLink(inv.getCode());
-        byte[] png = qrCodeService.generatePng(link, 256);
-        sendPhoto(chatId, png, "invite.png");
-        sendMessage(chatId, "Ссылка для приглашения (действует 7 дней):\n" + link);
-    }
-
-    /** Проверка прав: минимум капитан. При отказе отправляет сообщение и возвращает false. */
-    private boolean requireCaptain(long chatId, Long teamId, String telegramUserIdStr) {
-        try {
-            teamMemberService.requireAtLeast(teamId, telegramUserIdStr, TeamMember.Role.CAPTAIN);
-            return true;
-        } catch (SecurityException e) {
-            sendMessage(chatId, e.getMessage());
-            return false;
-        }
-    }
-
-    private void setRole(long chatId, Long teamId, String callerTelegramUserId, String args) {
-        String[] parts = args.trim().split("\\s+");
-        if (parts.length < 2) {
-            sendMessage(chatId, "Формат: /setrole TelegramID роль\nРоли: ADMIN, CAPTAIN, PLAYER\nПример: /setrole 123456789 CAPTAIN");
-            return;
-        }
-        String targetIdStr = parts[0];
-        TeamMember.Role role;
-        try {
-            role = TeamMember.Role.valueOf(parts[1].toUpperCase());
-        } catch (IllegalArgumentException e) {
-            sendMessage(chatId, "Роль должна быть: ADMIN, CAPTAIN или PLAYER.");
-            return;
-        }
-        try {
-            teamMemberService.setRole(teamId, callerTelegramUserId, targetIdStr, role);
-            sendMessage(chatId, "Роль назначена: " + targetIdStr + " — " + role);
-        } catch (SecurityException e) {
-            sendMessage(chatId, e.getMessage());
-        } catch (IllegalArgumentException e) {
-            sendMessage(chatId, e.getMessage());
-        }
-    }
-
-    private void addPlayer(long chatId, Long teamId, String args) {
-        String[] parts = args.split("\\s+");
-        if (parts.length < 2) {
-            sendMessage(chatId, "Формат: Имя Номер. Например: Иван Петров 23");
-            return;
-        }
-        int number;
-        try {
-            number = Integer.parseInt(parts[parts.length - 1]);
-        } catch (NumberFormatException e) {
-            sendMessage(chatId, "Номер должен быть числом. Например: Иван Петров 23");
-            return;
-        }
-        String name = String.join(" ", java.util.Arrays.copyOf(parts, parts.length - 1));
-        playerService.addPlayer(teamId, name, number);
-        sendMessage(chatId, "Игрок " + name + " №" + number + " добавлен.");
-    }
-
-    private static final Map<Player.PlayerStatus, String> STATUS_LABEL = Map.of(
-            Player.PlayerStatus.ACTIVE, "активен",
-            Player.PlayerStatus.INJURY, "травма",
-            Player.PlayerStatus.VACATION, "отпуск",
-            Player.PlayerStatus.NOT_PAID, "не оплатил"
-    );
-
-    private void sendRoster(long chatId, Long teamId, String filterArg) {
-        Player.PlayerStatus filter = parseStatusFilter(filterArg);
-        List<Player> players = filter != null
-                ? playerService.findByTeamIdByStatus(teamId, filter)
-                : playerService.findByTeamId(teamId);
-        if (players.isEmpty()) {
-            String hint = filter != null
-                    ? "Нет игроков со статусом «" + STATUS_LABEL.get(filter) + "»."
-                    : "Состав пуст. Добавь игроков: кнопка «Добавить игрока» или /addplayer Имя Номер.";
-            sendMessage(chatId, hint);
-            return;
-        }
-        StringBuilder sb = new StringBuilder(filter != null ? "Состав (" + STATUS_LABEL.get(filter) + "):\n" : "Состав:\n");
-        for (Player p : players) {
-            sb.append("• ").append(p.getName());
-            if (p.getNumber() != null) sb.append(" №").append(p.getNumber());
-            sb.append(" — ").append(STATUS_LABEL.get(p.getPlayerStatus())).append("\n");
-        }
-        sb.append("\nФильтр: кнопка «Команды» или /roster активные | травма | отпуск | не оплатил\nИзменить статус: /setstatus Имя статус");
-        sendMessage(chatId, sb.toString());
-    }
-
-    private Player.PlayerStatus parseStatusFilter(String arg) {
-        if (arg == null || arg.isBlank()) return null;
-        String s = arg.trim().toLowerCase();
-        return switch (s) {
-            case "активен", "активные", "активный" -> Player.PlayerStatus.ACTIVE;
-            case "травма" -> Player.PlayerStatus.INJURY;
-            case "отпуск" -> Player.PlayerStatus.VACATION;
-            case "не оплатил", "неоплатил" -> Player.PlayerStatus.NOT_PAID;
-            default -> null;
-        };
-    }
-
-    private void setPlayerStatus(long chatId, Long teamId, String args) {
-        String[] parts = args.trim().split("\\s+");
-        if (parts.length < 2) {
-            sendMessage(chatId, "Формат: /setstatus Имя статус\nСтатусы: активен, травма, отпуск, не оплатил\nПример: /setstatus Иван Петров травма");
-            return;
-        }
-        // Статус «не оплатил» из двух слов
-        Player.PlayerStatus status = null;
-        int nameEnd = parts.length;
-        if (parts.length >= 2 && "не".equalsIgnoreCase(parts[parts.length - 2]) && "оплатил".equalsIgnoreCase(parts[parts.length - 1])) {
-            status = Player.PlayerStatus.NOT_PAID;
-            nameEnd = parts.length - 2;
-        } else {
-            status = parseStatusFilter(parts[parts.length - 1]);
-            nameEnd = parts.length - 1;
-        }
-        if (status == null) {
-            sendMessage(chatId, "Неизвестный статус. Укажи: активен, травма, отпуск или не оплатил.");
-            return;
-        }
-        String name = String.join(" ", java.util.Arrays.copyOf(parts, nameEnd));
-        if (name.isBlank()) {
-            sendMessage(chatId, "Укажи имя игрока.");
-            return;
-        }
-        try {
-            playerService.setPlayerStatus(teamId, name, status);
-            sendMessage(chatId, "Статус обновлён: " + name + " — " + STATUS_LABEL.get(status));
-        } catch (IllegalArgumentException e) {
-            sendMessage(chatId, e.getMessage());
-        }
-    }
-
-    private void newMatch(long chatId, Long teamId, String opponent) {
-        if (opponent.isBlank()) {
-            sendMessage(chatId, "Укажи соперника: /newmatch Соперник");
-            return;
-        }
-        Match match = matchService.createMatch(teamId, opponent, Instant.now(), null);
-        String dateStr = DateTimeFormatter.ofPattern("dd.MM.yyyy").withZone(ZoneId.systemDefault()).format(match.getDate());
-        sendMessage(chatId, "Матч создан: " + dateStr + " против " + match.getOpponent() + ".\nВвести счёт: /result наши их");
-    }
-
-    private void sendResultHint(long chatId, Long teamId) {
-        Optional<Match> last = matchService.findLastScheduled(teamId);
-        if (last.isEmpty()) {
-            sendMessage(chatId, "Нет запланированных матчей. Создай матч: /newmatch Соперник");
-            return;
-        }
-        Match m = last.get();
-        sendMessage(chatId, "Последний матч: против " + m.getOpponent() + ".\nВведи счёт: /result наши их\nНапример: /result 85 82");
-    }
-
-    private void setResult(long chatId, Long teamId, String args) {
-        String[] parts = args.trim().split("\\s+");
-        if (parts.length != 2) {
-            sendMessage(chatId, "Формат: /result наши очки очки соперника. Например: /result 85 82");
-            return;
-        }
-        int ourScore;
-        int opponentScore;
-        try {
-            ourScore = Integer.parseInt(parts[0]);
-            opponentScore = Integer.parseInt(parts[1]);
-        } catch (NumberFormatException e) {
-            sendMessage(chatId, "Оба значения должны быть числами. Например: /result 85 82");
-            return;
-        }
-        Optional<Match> last = matchService.findLastScheduled(teamId);
-        if (last.isEmpty()) {
-            sendMessage(chatId, "Нет запланированного матча для ввода результата.");
-            return;
-        }
-        Match match = matchService.setResult(last.get().getId(), teamId, ourScore, opponentScore);
-        sendMessage(chatId, "Результат сохранён: " + match.getOurScore() + " : " + match.getOpponentScore() + " (против " + match.getOpponent() + ")");
-
-        Team team = teamService.findById(teamId).orElseThrow();
-        String postText = matchPostService.buildPostText(team, match);
-        if (!postText.isEmpty()) {
-            sendMessage(chatId, "Пост для соцсетей:\n\n" + postText);
-        }
-
-        byte[] imagePng = matchImageService.generateScoreCard(team, match);
-        if (imagePng.length > 0) {
-            sendPhoto(chatId, imagePng, "result.png");
-            sendMessageWithPublishButton(chatId, match.getId());
-        }
+        sendMessageWithReplyKeyboard(chatId, "Команда «" + team.getName() + "» создана. Участники видят расписание, состав, могут редактировать профиль и выйти из команды. Админка — для управления.", mainMenu());
     }
 
     private void handleCallbackQuery(CallbackQuery callbackQuery) {
-        String data = callbackQuery.getData();
-        if (data == null || data.isEmpty()) return;
-
-        long chatId = callbackQuery.getMessage().getChatId();
-        String callbackId = callbackQuery.getId();
-
-        if (data.startsWith("roster:")) {
-            handleRosterCallback(chatId, callbackId, data.substring("roster:".length()));
-            return;
-        }
-        if (data.startsWith("cmd:")) {
-            handleCmdCallback(chatId, callbackId, data.substring("cmd:".length()));
-            return;
-        }
-        if (data.startsWith("paid:")) {
-            handlePaidCallback(chatId, callbackId, data.substring("paid:".length()), callbackQuery.getFrom() != null ? String.valueOf(callbackQuery.getFrom().getId()) : null);
-            return;
-        }
-        if (!data.startsWith("publish:")) return;
-
-        Optional<Team> teamOpt = teamService.findByTelegramChatId(String.valueOf(chatId));
-        if (teamOpt.isEmpty()) {
-            answerCallback(callbackId, "Команда не найдена.", true);
-            return;
-        }
-        Team team = teamOpt.get();
-        String callerUserIdStr = callbackQuery.getFrom() != null ? String.valueOf(callbackQuery.getFrom().getId()) : null;
-        if (callerUserIdStr != null) {
-            try {
-                teamMemberService.requireAtLeast(team.getId(), callerUserIdStr, TeamMember.Role.CAPTAIN);
-            } catch (SecurityException e) {
-                answerCallback(callbackId, e.getMessage(), true);
-                return;
-            }
-        }
-        if (team.getChannelTelegramChatId() == null || team.getChannelTelegramChatId().isBlank()) {
-            answerCallback(callbackId, "Сначала укажи канал: /setchannel ID_канала", true);
-            return;
-        }
-
-        long matchId;
-        try {
-            matchId = Long.parseLong(data.substring("publish:".length()));
-        } catch (NumberFormatException e) {
-            answerCallback(callbackId, "Ошибка данных.", true);
-            return;
-        }
-
-        Optional<Match> matchOpt = matchService.findByIdAndTeamId(matchId, team.getId());
-        if (matchOpt.isEmpty()) {
-            answerCallback(callbackId, "Матч не найден.", true);
-            return;
-        }
-        Match match = matchOpt.get();
-        byte[] imagePng = matchImageService.generateScoreCard(team, match);
-        if (imagePng.length == 0) {
-            answerCallback(callbackId, "Не удалось сгенерировать картинку.", true);
-            return;
-        }
-        sendPhoto(Long.parseLong(team.getChannelTelegramChatId()), imagePng, "result.png");
-        answerCallback(callbackId, "Опубликовано в канал.");
-    }
-
-    private void handleRosterCallback(long chatId, String callbackId, String statusKey) {
-        Optional<Team> teamOpt = teamService.findByTelegramChatId(String.valueOf(chatId));
-        if (teamOpt.isEmpty()) {
-            answerCallback(callbackId, "Команда не найдена.", true);
-            return;
-        }
-        answerCallback(callbackId, null);
-        Player.PlayerStatus filter = switch (statusKey.toUpperCase()) {
-            case "ACTIVE" -> Player.PlayerStatus.ACTIVE;
-            case "INJURY" -> Player.PlayerStatus.INJURY;
-            case "VACATION" -> Player.PlayerStatus.VACATION;
-            case "NOT_PAID" -> Player.PlayerStatus.NOT_PAID;
-            default -> null; // ALL
-        };
-        sendRoster(chatId, teamOpt.get().getId(), filter != null ? STATUS_LABEL.get(filter) : null);
-    }
-
-    private void handleCmdCallback(long chatId, String callbackId, String cmd) {
-        answerCallback(callbackId, null);
-        String text = switch (cmd) {
-            case "setstatus" -> "Изменить статус игрока. Отправь:\n/setstatus Имя статус\nСтатусы: активен, травма, отпуск, не оплатил\nПример: /setstatus Иван Петров травма";
-            case "setchannel" -> "Настроить канал для публикации. Отправь:\n/setchannel ID_канала\nID канала обычно вида -1001234567890. Добавь бота в канал как админа.";
-            case "setdebt" -> "Выставить долг. Отправь:\n/setdebt Имя Сумма\nПример: /setdebt Иван Петров 500";
-            default -> "Неизвестная команда. Нажми «Команды» для списка.";
-        };
-        sendMessage(chatId, text);
-    }
-
-    /** Список команд по роли: капитан и выше видят setstatus, setchannel, setdebt; игрок — только состав и фильтры. */
-    private void sendCommandsMenu(long chatId, Long teamId, String telegramUserIdStr) {
-        TeamMember.Role role = teamMemberService.getRole(teamId, telegramUserIdStr).orElse(TeamMember.Role.PLAYER);
-        boolean captainOrAdmin = TeamMember.roleLevel(role) >= TeamMember.roleLevel(TeamMember.Role.CAPTAIN);
-        List<InlineKeyboardRow> rows = new ArrayList<>();
-        rows.add(new InlineKeyboardRow(
-                InlineKeyboardButton.builder().text("Состав (все)").callbackData("roster:ALL").build(),
-                InlineKeyboardButton.builder().text("Активные").callbackData("roster:ACTIVE").build(),
-                InlineKeyboardButton.builder().text("Травма").callbackData("roster:INJURY").build()
-        ));
-        rows.add(new InlineKeyboardRow(
-                InlineKeyboardButton.builder().text("Отпуск").callbackData("roster:VACATION").build(),
-                InlineKeyboardButton.builder().text("Не оплатил").callbackData("roster:NOT_PAID").build()
-        ));
-        if (captainOrAdmin) {
-            rows.add(new InlineKeyboardRow(
-                    InlineKeyboardButton.builder().text("Изменить статус").callbackData("cmd:setstatus").build(),
-                    InlineKeyboardButton.builder().text("Настроить канал").callbackData("cmd:setchannel").build(),
-                    InlineKeyboardButton.builder().text("Выставить долг").callbackData("cmd:setdebt").build()
-            ));
-        }
-        InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(rows).build();
-        sendMessage(chatId, "Выбери команду (доступно по твоей роли):", markup);
-    }
-
-    private void sendMessageWithPublishButton(long chatId, long matchId) {
-        InlineKeyboardButton button = InlineKeyboardButton.builder()
-                .text("Опубликовать в канал")
-                .callbackData("publish:" + matchId)
-                .build();
-        InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder()
-                .keyboard(List.of(new InlineKeyboardRow(button)))
-                .build();
-        sendMessage(chatId, "Карточка готова. Опубликовать в канал?", markup);
-    }
-
-    private void setChannel(long chatId, Long teamId, String channelId) {
-        String id = channelId != null ? channelId.trim() : "";
-        if (id.isEmpty()) {
-            sendMessage(chatId, "Формат: /setchannel ID_канала\nID канала обычно вида -1001234567890. Добавь бота в канал как админа.");
-            return;
-        }
-        teamService.setChannelChatId(teamId, id);
-        sendMessage(chatId, "Канал для публикации задан. После ввода результата можно нажать «Опубликовать в канал».");
+        answerCallback(callbackQuery.getId(), "Команда недоступна. Управление — в админке.", true);
     }
 
     private void answerCallback(String callbackQueryId, String text, boolean showAlert) {
@@ -673,10 +291,6 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
         } catch (Exception e) {
             throw new RuntimeException("Не удалось ответить на callback", e);
         }
-    }
-
-    private void answerCallback(String callbackQueryId, String text) {
-        answerCallback(callbackQueryId, text, false);
     }
 
     private void sendPoll(long chatId, String question) {
@@ -694,113 +308,52 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
         }
     }
 
-    private void sendDebtList(long chatId, Long teamId) {
-        List<Player> debtors = playerService.findWithDebt(teamId);
-        if (debtors.isEmpty()) {
-            sendMessage(chatId, "Долгов нет.");
-            return;
-        }
-        StringBuilder sb = new StringBuilder("Долги:\n");
-        for (Player p : debtors) {
-            sb.append("• ").append(p.getName()).append(" — ").append(p.getDebt()).append(" ₽\n");
-        }
-        sb.append("\nОтметить оплату: /paid Имя или кнопка ниже.\nИзменить долг: /setdebt Имя Сумма");
-        List<InlineKeyboardRow> rows = new ArrayList<>();
-        for (Player p : debtors) {
-            rows.add(new InlineKeyboardRow(
-                    InlineKeyboardButton.builder().text("Оплатил: " + p.getName()).callbackData("paid:" + p.getId()).build()
-            ));
-        }
-        InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(rows).build();
-        sendMessage(chatId, sb.toString(), markup);
-    }
-
-    private void handlePaidCallback(long chatId, String callbackId, String playerIdStr, String callerUserIdStr) {
-        Optional<Team> teamOpt = teamService.findByTelegramChatId(String.valueOf(chatId));
-        if (teamOpt.isEmpty()) {
-            answerCallback(callbackId, "Команда не найдена.", true);
-            return;
-        }
-        Team team = teamOpt.get();
-        if (callerUserIdStr != null) {
-            try {
-                teamMemberService.requireAtLeast(team.getId(), callerUserIdStr, TeamMember.Role.CAPTAIN);
-            } catch (SecurityException e) {
-                answerCallback(callbackId, e.getMessage(), true);
-                return;
-            }
-        }
-        long playerId;
-        try {
-            playerId = Long.parseLong(playerIdStr);
-        } catch (NumberFormatException e) {
-            answerCallback(callbackId, "Ошибка данных.", true);
-            return;
-        }
-        try {
-            Player p = playerService.clearDebtByPlayerId(team.getId(), playerId);
-            answerCallback(callbackId, "Долг снят: " + p.getName());
-            sendDebtList(chatId, team.getId());
-        } catch (IllegalArgumentException e) {
-            answerCallback(callbackId, e.getMessage(), true);
-        }
-    }
-
-    private void markPaid(long chatId, Long teamId, String name) {
-        if (name == null || name.isBlank()) {
-            sendMessage(chatId, "Формат: /paid Имя\nНапример: /paid Иван Петров");
-            return;
-        }
-        try {
-            Player p = playerService.clearDebt(teamId, name.trim());
-            sendMessage(chatId, "Оплата отмечена: " + p.getName());
-        } catch (IllegalArgumentException e) {
-            sendMessage(chatId, e.getMessage());
-        }
-    }
-
-    private void setDebt(long chatId, Long teamId, String args) {
-        String[] parts = args.trim().split("\\s+");
-        if (parts.length < 2) {
-            sendMessage(chatId, "Формат: /setdebt Имя Сумма\nНапример: /setdebt Иван Петров 500");
-            return;
-        }
-        java.math.BigDecimal amount;
-        try {
-            amount = new java.math.BigDecimal(parts[parts.length - 1].replace(",", "."));
-        } catch (NumberFormatException e) {
-            sendMessage(chatId, "Сумма должна быть числом. Например: /setdebt Иван 500");
-            return;
-        }
-        String name = String.join(" ", java.util.Arrays.copyOf(parts, parts.length - 1));
-        try {
-            playerService.setDebt(teamId, name, amount);
-            sendMessage(chatId, "Долг для " + name + ": " + amount + " ₽");
-        } catch (IllegalArgumentException e) {
-            sendMessage(chatId, e.getMessage());
-        }
-    }
-
-    /** Меню кнопок по роли: капитан и выше видят добавление игрока, матчи, результат, приглашение; игрок — только состав, опрос, долги, команды. */
-    private ReplyKeyboardMarkup mainMenu(Long teamId, String telegramUserIdStr) {
-        TeamMember.Role role = teamMemberService.getRole(teamId, telegramUserIdStr).orElse(TeamMember.Role.PLAYER);
-        boolean captainOrAdmin = TeamMember.roleLevel(role) >= TeamMember.roleLevel(TeamMember.Role.CAPTAIN);
+    private ReplyKeyboardMarkup mainMenu() {
         List<KeyboardRow> rows = new ArrayList<>();
-        if (captainOrAdmin) {
-            rows.add(new KeyboardRow(BTN_ROSTER, BTN_ADD_PLAYER));
-            rows.add(new KeyboardRow(BTN_NEW_MATCH, BTN_RESULT));
-        } else {
-            rows.add(new KeyboardRow(BTN_ROSTER));
-        }
-        rows.add(new KeyboardRow(BTN_POLL, BTN_DEBT));
-        if (captainOrAdmin) {
-            rows.add(new KeyboardRow(BTN_COMMANDS, BTN_INVITE));
-        } else {
-            rows.add(new KeyboardRow(BTN_COMMANDS));
-        }
+        rows.add(new KeyboardRow(BTN_SCHEDULE, BTN_ROSTER));
+        rows.add(new KeyboardRow(BTN_PROFILE, BTN_LEAVE, BTN_POLL));
         ReplyKeyboardMarkup markup = new ReplyKeyboardMarkup(rows);
         markup.setResizeKeyboard(true);
         return markup;
+    }
+
+    private void sendSchedule(long chatId, Long teamId) {
+        List<Match> matches = matchService.findByTeamIdOrderByDateDesc(teamId);
+        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm").withZone(ZoneId.systemDefault());
+        if (matches.isEmpty()) {
+            sendMessage(chatId, "Расписание пусто. Ближайшие игры добавят в админке.");
+            return;
+        }
+        StringBuilder sb = new StringBuilder("Расписание игр:\n\n");
+        for (Match m : matches) {
+            String dateStr = fmt.format(m.getDate());
+            String status = m.getStatus() == Match.Status.SCHEDULED ? "⏳" : (m.getStatus() == Match.Status.COMPLETED ? "✅" : "❌");
+            sb.append(status).append(" ").append(dateStr).append(" — ").append(m.getOpponent());
+            if (m.getStatus() == Match.Status.COMPLETED && m.getOurScore() != null && m.getOpponentScore() != null) {
+                sb.append(" (").append(m.getOurScore()).append(":").append(m.getOpponentScore()).append(")");
+            }
+            if (m.getLocation() != null && !m.getLocation().isBlank()) {
+                sb.append(", ").append(m.getLocation());
+            }
+            sb.append("\n");
+        }
+        sendMessage(chatId, sb.toString());
+    }
+
+    private void sendRoster(long chatId, Long teamId) {
+        List<Player> players = playerService.findByTeamId(teamId);
+        if (players.isEmpty()) {
+            sendMessage(chatId, "Состав пуст. Участников добавляют через приглашения и админку.");
+            return;
+        }
+        StringBuilder sb = new StringBuilder("Состав команды:\n\n");
+        for (Player p : players) {
+            if (!p.isActive()) continue;
+            sb.append("• ").append(p.getName());
+            if (p.getNumber() != null) sb.append(" №").append(p.getNumber());
+            sb.append(" — ").append(STATUS_LABEL.getOrDefault(p.getPlayerStatus(), p.getPlayerStatus().name())).append("\n");
+        }
+        sendMessage(chatId, sb.toString());
     }
 
     private void sendMessage(long chatId, String messageText) {
@@ -821,30 +374,4 @@ public class BasketTelegramBot implements SpringLongPollingBot, LongPollingSingl
         }
     }
 
-    private void sendMessage(long chatId, String messageText, InlineKeyboardMarkup inlineMarkup) {
-        try {
-            SendMessage.SendMessageBuilder builder = SendMessage.builder()
-                    .chatId(String.valueOf(chatId))
-                    .text(messageText);
-            if (inlineMarkup != null) {
-                builder.replyMarkup(inlineMarkup);
-            }
-            telegramClient.execute(builder.build());
-        } catch (Exception e) {
-            throw new RuntimeException("Не удалось отправить сообщение в Telegram", e);
-        }
-    }
-
-    private void sendPhoto(long chatId, byte[] imagePng, String fileName) {
-        try {
-            InputFile photo = new InputFile(new ByteArrayInputStream(imagePng), fileName);
-            SendPhoto sendPhoto = SendPhoto.builder()
-                    .chatId(String.valueOf(chatId))
-                    .photo(photo)
-                    .build();
-            telegramClient.execute(sendPhoto);
-        } catch (Exception e) {
-            throw new RuntimeException("Не удалось отправить картинку в Telegram", e);
-        }
-    }
 }

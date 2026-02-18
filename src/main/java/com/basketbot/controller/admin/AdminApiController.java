@@ -14,6 +14,7 @@ import com.basketbot.service.PlayerService;
 import com.basketbot.service.SystemSettingsService;
 import com.basketbot.service.TeamService;
 import jakarta.servlet.http.HttpSession;
+import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.generics.TelegramClient;
@@ -141,24 +142,56 @@ public class AdminApiController {
         Long teamId = requireTeamId(session);
         if (teamId == null) return ResponseEntity.status(403).build();
         List<MemberDto> list = teamMemberService.findByTeamId(teamId).stream()
-                .map(m -> new MemberDto(
-                        m.getTelegramUserId(),
-                        m.getTelegramUsername() != null ? m.getTelegramUsername() : "",
-                        m.getDisplayName() != null ? m.getDisplayName() : "",
-                        m.getRole().name()))
+                .map(m -> {
+                    Optional<Player> playerOpt = playerService.findByTeamIdAndTelegramId(teamId, m.getTelegramUserId());
+                    Integer number = playerOpt.map(Player::getNumber).orElse(null);
+                    String status = playerOpt.map(p -> p.getPlayerStatus().name()).orElse(Player.PlayerStatus.ACTIVE.name());
+                    BigDecimal debt = playerOpt.map(Player::getDebt).orElse(BigDecimal.ZERO);
+                    return new MemberDto(
+                            m.getTelegramUserId(),
+                            m.getTelegramUsername() != null ? m.getTelegramUsername() : "",
+                            m.getDisplayName() != null ? m.getDisplayName() : "",
+                            m.getRole().name(),
+                            number,
+                            status,
+                            debt != null ? debt : BigDecimal.ZERO,
+                            m.isActive());
+                })
                 .collect(Collectors.toList());
         return ResponseEntity.ok(list);
     }
 
     @PatchMapping("/members/{telegramUserId}")
-    public ResponseEntity<ActionResult> updateMemberDisplayName(@PathVariable String telegramUserId,
-                                                                @RequestBody MemberDisplayNameRequest body,
-                                                                HttpSession session) {
+    public ResponseEntity<ActionResult> updateMember(@PathVariable String telegramUserId,
+                                                      @RequestBody MemberUpdateRequest body,
+                                                      HttpSession session) {
         Long teamId = requireTeamId(session);
         if (teamId == null) return ResponseEntity.status(403).build();
         if (telegramUserId == null || telegramUserId.isBlank()) return ResponseEntity.badRequest().body(new ActionResult(false, null, "Укажи участника"));
-        teamMemberService.updateDisplayName(teamId, telegramUserId.trim(), body != null ? body.displayName() : null);
-        return ResponseEntity.ok(new ActionResult(true, "Имя сохранено.", null));
+        TeamMember.Role role = null;
+        if (body != null && body.role() != null && !body.role().isBlank()) {
+            try {
+                role = TeamMember.Role.valueOf(body.role().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest().body(new ActionResult(false, null, "Роль: ADMIN или PLAYER"));
+            }
+        }
+        Player.PlayerStatus status = null;
+        if (body != null && body.status() != null && !body.status().isBlank()) {
+            try {
+                status = Player.PlayerStatus.valueOf(body.status().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest().body(new ActionResult(false, null, "Статус: ACTIVE, INJURY, VACATION, NOT_PAID"));
+            }
+        }
+        teamMemberService.updateMemberFull(teamId, telegramUserId.trim(),
+                body != null ? body.displayName() : null,
+                role,
+                body != null ? body.isActive() : null,
+                body != null ? body.number() : null,
+                status,
+                body != null && body.debt() != null ? body.debt() : null);
+        return ResponseEntity.ok(new ActionResult(true, "Участник обновлён.", null));
     }
 
     @GetMapping("/invitations")
@@ -188,7 +221,7 @@ public class AdminApiController {
             String link = invitationService.buildInviteLink(inv.getCode());
             return ResponseEntity.ok(new InvitationCreateResponse(true, new InvitationDto(inv.getCode(), link, inv.getRole().name(), inv.getExpiresAt().toString()), null));
         } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(new InvitationCreateResponse(false, null, "Роль: ADMIN, CAPTAIN или PLAYER"));
+            return ResponseEntity.badRequest().body(new InvitationCreateResponse(false, null, "Роль: ADMIN или PLAYER"));
         }
     }
 
@@ -199,75 +232,6 @@ public class AdminApiController {
         boolean deleted = invitationService.deleteByCode(teamId, code);
         if (deleted) return ResponseEntity.ok(new ActionResult(true, "Приглашение удалено.", null));
         return ResponseEntity.notFound().build();
-    }
-
-    @PatchMapping("/members/{telegramUserId}/role")
-    public ResponseEntity<ActionResult> setMemberRole(@PathVariable String telegramUserId,
-                                                      @RequestBody MemberRoleRequest body,
-                                                      HttpSession session) {
-        Long teamId = requireTeamId(session);
-        if (teamId == null) return ResponseEntity.status(403).build();
-        if (telegramUserId == null || telegramUserId.isBlank()) return ResponseEntity.badRequest().body(new ActionResult(false, null, "Укажи Telegram ID"));
-        if (body == null || body.role() == null || body.role().isBlank()) return ResponseEntity.badRequest().body(new ActionResult(false, null, "Укажи роль: ADMIN, CAPTAIN, PLAYER"));
-        try {
-            TeamMember.Role role = TeamMember.Role.valueOf(body.role().toUpperCase());
-            teamMemberService.setRoleByAdmin(teamId, telegramUserId.trim(), role);
-            return ResponseEntity.ok(new ActionResult(true, "Роль обновлена.", null));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Роль: ADMIN, CAPTAIN или PLAYER"));
-        }
-    }
-
-    @GetMapping("/players")
-    public ResponseEntity<List<PlayerDto>> players(HttpSession session) {
-        Long teamId = requireTeamId(session);
-        if (teamId == null) return ResponseEntity.status(403).build();
-        return ResponseEntity.ok(playerService.findByTeamId(teamId).stream().map(this::toPlayerDto).collect(Collectors.toList()));
-    }
-
-    @PostMapping("/players")
-    public ResponseEntity<ActionResult> createPlayer(@RequestBody PlayerCreateDto dto, HttpSession session) {
-        Long teamId = requireTeamId(session);
-        if (teamId == null) return ResponseEntity.status(403).build();
-        try {
-            playerService.addPlayer(teamId, dto.name(), dto.number() != null ? dto.number() : 0);
-            return ResponseEntity.ok(new ActionResult(true, "Игрок добавлен.", null));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(new ActionResult(false, null, e.getMessage()));
-        }
-    }
-
-    @GetMapping("/players/{id}")
-    public ResponseEntity<PlayerDto> getPlayer(@PathVariable Long id, HttpSession session) {
-        Long teamId = requireTeamId(session);
-        if (teamId == null) return ResponseEntity.status(403).build();
-        return playerService.findByIdAndTeamId(id, teamId)
-                .map(p -> ResponseEntity.ok(toPlayerDto(p)))
-                .orElse(ResponseEntity.notFound().build());
-    }
-
-    @PutMapping("/players/{id}")
-    public ResponseEntity<ActionResult> updatePlayer(@PathVariable Long id, @RequestBody PlayerUpdateDto dto, HttpSession session) {
-        Long teamId = requireTeamId(session);
-        if (teamId == null) return ResponseEntity.status(403).build();
-        try {
-            playerService.updatePlayer(teamId, id, dto.name(), dto.number(), dto.status() != null ? Player.PlayerStatus.valueOf(dto.status()) : null);
-            return ResponseEntity.ok(new ActionResult(true, "Игрок обновлён.", null));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(new ActionResult(false, null, e.getMessage()));
-        }
-    }
-
-    @DeleteMapping("/players/{id}")
-    public ResponseEntity<ActionResult> deletePlayer(@PathVariable Long id, HttpSession session) {
-        Long teamId = requireTeamId(session);
-        if (teamId == null) return ResponseEntity.status(403).build();
-        try {
-            playerService.deletePlayer(teamId, id);
-            return ResponseEntity.ok(new ActionResult(true, "Игрок удалён.", null));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(new ActionResult(false, null, e.getMessage()));
-        }
     }
 
     @GetMapping("/matches")
@@ -414,6 +378,29 @@ public class AdminApiController {
         }
     }
 
+    @PostMapping("/notify")
+    public ResponseEntity<ActionResult> notifyTeam(@RequestBody NotifyRequest body, HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        Team team = teamService.findById(teamId).orElse(null);
+        if (team == null) return ResponseEntity.status(403).build();
+        String chatId = team.getTelegramChatId();
+        if (chatId == null || chatId.isBlank()) {
+            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Добавьте бота в чат команды и напишите там /start, чтобы привязать чат."));
+        }
+        String message = body != null && body.message() != null ? body.message().trim() : "";
+        if (message.isEmpty()) {
+            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Введите текст уведомления."));
+        }
+        if (message.length() > 4000) message = message.substring(0, 4000);
+        try {
+            telegramClient.execute(SendMessage.builder().chatId(chatId).text("📢 " + message).build());
+            return ResponseEntity.ok(new ActionResult(true, "Уведомление отправлено в чат команды.", null));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Не удалось отправить: " + e.getMessage()));
+        }
+    }
+
     @PostMapping("/debt/paid/{playerId}")
     public ResponseEntity<ActionResult> debtPaid(@PathVariable Long playerId, HttpSession session) {
         Long teamId = requireTeamId(session);
@@ -489,11 +476,12 @@ public class AdminApiController {
     public record DebtListDto(List<PlayerDto> debtors) {}
     public record DebtSetDto(String playerName, String amount) {}
     public record SettingsDto(String channelId) {}
-    public record MemberDto(String telegramUserId, String telegramUsername, String displayName, String role) {}
-    public record MemberRoleRequest(String role) {}
-    public record MemberDisplayNameRequest(String displayName) {}
+    public record MemberDto(String telegramUserId, String telegramUsername, String displayName, String role,
+                            Integer number, String status, java.math.BigDecimal debt, boolean isActive) {}
+    public record MemberUpdateRequest(String displayName, String role, Boolean isActive, Integer number, String status, java.math.BigDecimal debt) {}
     public record SystemSettingsDto(String adminTelegramUsername) {}
     public record InvitationDto(String code, String link, String role, String expiresAt) {}
     public record InvitationCreateRequest(String role, Integer expiresInDays) {}
     public record InvitationCreateResponse(boolean success, InvitationDto invitation, String error) {}
+    public record NotifyRequest(String message) {}
 }

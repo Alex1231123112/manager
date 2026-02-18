@@ -22,3 +22,6 @@ application-local.yaml
 # OS
 .DS_Store
 Thumbs.db
+
+# Local/temp
+admin/
