@@ -135,8 +135,8 @@ export default function AdminLayoutClient({
       { teamId }
     );
     if (res.ok && res.data?.success) {
+      router.push("/dashboard");
       router.refresh();
-      window.location.href = "/dashboard";
     }
   }
 
