@@ -25,6 +25,9 @@ public class Team {
     @Column(name = "channel_telegram_chat_id", length = 100)
     private String channelTelegramChatId;
 
+    @Column(name = "group_telegram_chat_id", length = 100)
+    private String groupTelegramChatId;
+
     @Column(name = "logo_url")
     private String logoUrl;
 
@@ -61,6 +64,14 @@ public class Team {
 
     public void setChannelTelegramChatId(String channelTelegramChatId) {
         this.channelTelegramChatId = channelTelegramChatId;
+    }
+
+    public String getGroupTelegramChatId() {
+        return groupTelegramChatId;
+    }
+
+    public void setGroupTelegramChatId(String groupTelegramChatId) {
+        this.groupTelegramChatId = groupTelegramChatId;
     }
 
     public String getLogoUrl() {

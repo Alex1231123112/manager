@@ -11,4 +11,7 @@ public interface TeamMemberRepository extends JpaRepository<TeamMember, Long> {
     Optional<TeamMember> findByTeamIdAndTelegramUserId(Long teamId, String telegramUserId);
 
     List<TeamMember> findByTeamId(Long teamId);
+
+    /** Участники по Telegram user id (для поиска команды пользователя из лички). */
+    List<TeamMember> findByTelegramUserId(String telegramUserId);
 }

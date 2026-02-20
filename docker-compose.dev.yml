@@ -1,24 +1,31 @@
-# Только PostgreSQL для разработки (приложение запускаешь локально: mvn spring-boot:run или из IDE).
-# Запуск: docker compose -f docker-compose.dev.yml up -d
-# Подключение приложения: localhost:5432, user=basketbot, password=basketbot, db=basketbot
+# Режим разработки: admin-ui с автоперезагрузкой при изменении файлов.
+# node_modules в контейнере — свои (Linux), иначе lightningcss и др. не найдут бинарники.
+# Запуск: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: basketbot-postgres
+  admin-ui:
+    image: manager-admin-ui-dev
+    build:
+      context: ./admin-ui
+      dockerfile: Dockerfile.dev
+    container_name: basketbot-admin-ui-dev
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: basketbot
-      POSTGRES_USER: basketbot
-      POSTGRES_PASSWORD: basketbot
-    ports:
-      - "5432:5432"
+      NEXT_PUBLIC_API_URL: http://localhost:8095
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./admin-ui:/app
+      # Свой node_modules в контейнере (Linux), не с хоста (Windows)
+      - admin_ui_node_modules:/app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      app:
+        condition: service_healthy
+    # Отключаем healthcheck в dev — контейнер жив, пока next dev запущен
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U basketbot -d basketbot"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      disable: true
 
 volumes:
-  postgres_data:
+  admin_ui_node_modules:

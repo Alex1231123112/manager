@@ -6,8 +6,9 @@ COPY pom.xml .
 RUN mvn dependency:go-offline -B
 
 COPY src ./src
-# Тесты (в т.ч. AdminApiLoginTest) запускаются внутри контейнера
-RUN mvn package -B
+# Сборка (тесты при сборке образа пропущены — запускайте локально: mvn test)
+ARG SKIP_TESTS=true
+RUN mvn package -B -DskipTests=${SKIP_TESTS}
 
 # Запуск
 FROM eclipse-temurin:17-jre-alpine

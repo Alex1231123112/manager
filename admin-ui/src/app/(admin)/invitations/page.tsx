@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { apiGet, apiPost, apiDelete } from "@/lib/api";
+import { getUserFacingError } from "@/lib/errors";
 import type {
   InvitationDto,
   InvitationCreateResponse,
@@ -32,14 +33,21 @@ function formatExpiresAt(iso: string): string {
 export default function InvitationsPage() {
   const [list, setList] = useState<InvitationDto[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [creating, setCreating] = useState(false);
   const [createRole, setCreateRole] = useState("PLAYER");
   const [createDays, setCreateDays] = useState(7);
 
   function load() {
+    setLoadError(null);
+    setLoading(true);
     apiGet<InvitationDto[]>("/api/admin/invitations").then((res) => {
       setLoading(false);
+      if (res.status === 0 || res.networkError) {
+        setLoadError(getUserFacingError(0));
+        return;
+      }
       if (res.ok && Array.isArray(res.data)) setList(res.data);
     });
   }
@@ -63,7 +71,7 @@ export default function InvitationsPage() {
     } else {
       setMessage({
         type: "err",
-        text: res.data?.error ?? res.error ?? "Ошибка создания",
+        text: getUserFacingError(res.status, res.data?.error ?? res.error),
       });
     }
   }
@@ -76,7 +84,7 @@ export default function InvitationsPage() {
       setMessage({ type: "ok", text: res.data?.message ?? "Приглашение удалено" });
       load();
     } else {
-      setMessage({ type: "err", text: res.data?.data ?? res.error ?? "Ошибка" });
+      setMessage({ type: "err", text: getUserFacingError(res.status, res.data?.data ?? res.error) });
     }
   }
 
@@ -88,6 +96,21 @@ export default function InvitationsPage() {
   }
 
   if (loading) return <div className="text-zinc-500">Загрузка…</div>;
+  if (loadError) {
+    return (
+      <div>
+        <h1 className="mb-6 text-2xl font-semibold text-zinc-800">Приглашения в команду</h1>
+        <p className="mb-4 rounded-lg bg-amber-100 px-3 py-2 text-zinc-800">{loadError}</p>
+        <button
+          type="button"
+          onClick={() => load()}
+          className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+        >
+          Повторить
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -95,6 +118,9 @@ export default function InvitationsPage() {
         <h1 className="text-2xl font-semibold text-zinc-800">Приглашения в команду</h1>
         <p className="mt-1 text-sm text-zinc-500">
           Одно приглашение — по одной ссылке могут перейти несколько человек (массовое добавление). Участник переходит по ссылке или вводит в боте /start CODE и добавляется в команду с выбранной ролью. Ссылка действует до указанной даты.
+        </p>
+        <p className="mt-2 text-sm text-zinc-600">
+          После перехода по ссылке участнику нужно открыть чат команды в Telegram и отправить там /start.
         </p>
       </div>
       {message && (

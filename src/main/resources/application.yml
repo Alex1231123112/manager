@@ -28,6 +28,9 @@ admin:
 # URL новой админки (Next.js). Редирект с /admin на этот адрес.
 app:
   admin-ui-url: ${ADMIN_UI_URL:http://localhost:3000}
+  cors:
+    # Разрешённые origin для /api/admin (через запятую или список в YAML)
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
 
 # Сессия для API админки. По умолчанию Lax — cookie работает по HTTP (localhost).
 # Для продакшена с разными доменами фронта и API: SESSION_COOKIE_SAME_SITE=none, SESSION_COOKIE_SECURE=true (HTTPS).

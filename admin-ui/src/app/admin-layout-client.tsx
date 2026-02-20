@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { apiGet, apiPost, apiPut } from "@/lib/api";
+import { getUserFacingError } from "@/lib/errors";
 import type { MeResponse, TeamDto, SystemSettingsDto, ActionResult } from "@/lib/types";
 
 function FirstRunSetup({ onLogout }: { onLogout: () => void }) {
@@ -37,7 +38,7 @@ function FirstRunSetup({ onLogout }: { onLogout: () => void }) {
     if (res.ok && res.data?.success) {
       setMessage({ type: "ok", text: "Сохранено. Теперь этот пользователь может в Telegram написать боту /start и создать первую команду." });
     } else {
-      setMessage({ type: "err", text: res.data?.data ?? res.error ?? "Ошибка" });
+      setMessage({ type: "err", text: getUserFacingError(res.status, res.data?.data ?? res.error) });
     }
   }
 
@@ -102,9 +103,13 @@ function FirstRunSetup({ onLogout }: { onLogout: () => void }) {
 const nav = [
   { href: "/dashboard", label: "Дашборд" },
   { href: "/matches", label: "Матчи" },
+  { href: "/calendar", label: "Календарь" },
+  { href: "/league-table", label: "Таблица", title: "Турнирная таблица" },
   { href: "/debt", label: "Долги" },
+  { href: "/finance", label: "Финансы" },
   { href: "/members", label: "Участники" },
   { href: "/invitations", label: "Приглашения" },
+  { href: "/integration", label: "Интеграция", title: "Доставка сообщений и метрики Telegram" },
   { href: "/settings", label: "Настройки" },
 ];
 
@@ -117,9 +122,11 @@ export default function AdminLayoutClient({
   const router = useRouter();
   const [me, setMe] = useState<MeResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selectingTeamId, setSelectingTeamId] = useState<number | null>(null);
+  const [teamSelectError, setTeamSelectError] = useState<string | null>(null);
 
-  useEffect(() => {
-    apiGet<MeResponse>("/api/admin/me").then((res) => {
+  function loadMe() {
+    return apiGet<MeResponse>("/api/admin/me").then((res) => {
       setLoading(false);
       if (!res.ok || res.status === 401) {
         router.replace("/login");
@@ -127,16 +134,28 @@ export default function AdminLayoutClient({
       }
       if (res.data) setMe(res.data);
     });
-  }, [router]);
+  }
+
+  // Загружаем me только при монтировании (не при каждой смене страницы), чтобы не блокировать навигацию
+  useEffect(() => {
+    loadMe();
+  }, []);
 
   async function selectTeam(teamId: number) {
+    setTeamSelectError(null);
+    setSelectingTeamId(teamId);
     const res = await apiPost<{ success: boolean; error?: string }>(
       "/api/admin/team-select",
       { teamId }
     );
+    setSelectingTeamId(null);
     if (res.ok && res.data?.success) {
+      const meRes = await apiGet<MeResponse>("/api/admin/me");
+      if (meRes.data) setMe(meRes.data);
       router.push("/dashboard");
       router.refresh();
+    } else {
+      setTeamSelectError(getUserFacingError(res.status, res.data?.error ?? res.error));
     }
   }
 
@@ -146,10 +165,18 @@ export default function AdminLayoutClient({
     router.refresh();
   }
 
-  if (loading) {
+  // Показываем шапку сразу, контент — по готовности (чтобы не «мигало» полным экраном загрузки при навигации)
+  if (loading && !me) {
     return (
-      <div className="flex min-h-screen items-center justify-center text-zinc-500">
-        Загрузка…
+      <div className="min-h-screen bg-zinc-50">
+        <header className="border-b border-zinc-200 bg-white shadow-sm">
+          <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
+            <span className="text-sm text-zinc-400">Загрузка…</span>
+          </div>
+        </header>
+        <main className="mx-auto flex max-w-6xl items-center justify-center px-4 py-12">
+          <p className="text-zinc-500">Проверка доступа…</p>
+        </main>
       </div>
     );
   }
@@ -158,14 +185,21 @@ export default function AdminLayoutClient({
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-4">
         <h1 className="text-xl font-semibold text-zinc-800">Выберите команду</h1>
+        {teamSelectError && (
+          <p className="rounded-lg bg-red-100 px-3 py-2 text-sm text-red-800">
+            {teamSelectError}
+          </p>
+        )}
         <div className="flex flex-col gap-2">
           {me.teams.map((t: TeamDto) => (
             <button
               key={t.id}
+              type="button"
               onClick={() => selectTeam(t.id)}
-              className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-left hover:bg-zinc-50"
+              disabled={selectingTeamId !== null}
+              className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-left hover:bg-zinc-50 disabled:opacity-50"
             >
-              {t.name}
+              {selectingTeamId === t.id ? "Выбор…" : t.name}
             </button>
           ))}
         </div>
@@ -181,37 +215,36 @@ export default function AdminLayoutClient({
 
   return (
     <div className="min-h-screen bg-zinc-50">
-      <header className="border-b border-zinc-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-          <nav className="flex gap-4">
-            {nav.map(({ href, label }) => (
+      <header className="border-b border-zinc-200 bg-white shadow-sm">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-3">
+          <nav className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            {nav.map(({ href, label, title }) => (
               <Link
                 key={href}
                 href={href}
-                className={
-                  pathname === href
-                    ? "font-medium text-blue-600"
-                    : "text-zinc-600 hover:text-zinc-900"
-                }
+                title={title ?? label}
+                className={`whitespace-nowrap py-1 text-sm ${pathname === href ? "font-semibold text-blue-600" : "text-zinc-600 hover:text-zinc-900"}`}
               >
                 {label}
               </Link>
             ))}
           </nav>
-          <div className="flex items-center gap-4">
+          <div className="flex shrink-0 items-center gap-3 border-l border-zinc-200 pl-4">
             {me?.currentTeam && (
-              <span className="text-sm text-zinc-500">{me.currentTeam.name}</span>
+              <span className="max-w-[140px] truncate text-sm font-medium text-zinc-700" title={me.currentTeam.name}>
+                {me.currentTeam.name}
+              </span>
             )}
             <Link
               href="/team-select"
-              className="text-sm text-zinc-500 hover:text-zinc-700"
+              className="whitespace-nowrap text-sm text-zinc-500 hover:text-zinc-700"
             >
               Сменить команду
             </Link>
             <button
               type="button"
               onClick={logout}
-              className="text-sm text-zinc-500 hover:text-zinc-700"
+              className="whitespace-nowrap text-sm text-zinc-500 hover:text-zinc-700"
             >
               Выйти
             </button>

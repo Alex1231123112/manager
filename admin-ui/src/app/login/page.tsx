@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiPost } from "@/lib/api";
+import { getUserFacingError } from "@/lib/errors";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -21,7 +22,7 @@ export default function LoginPage() {
     );
     setLoading(false);
     if (!res.ok || !res.data?.success) {
-      setError(res.data?.error ?? res.error ?? "Ошибка входа");
+      setError(getUserFacingError(res.status, res.data?.error ?? res.error));
       return;
     }
     router.push("/dashboard");

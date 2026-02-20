@@ -53,6 +53,12 @@ public class Match {
     @Column(name = "reminder_24h_sent", nullable = false)
     private boolean reminder24hSent = false;
 
+    @Column(name = "reminder_24h_sent_at")
+    private Instant reminder24hSentAt;
+
+    @Column(name = "reminder_stats_sent", nullable = false)
+    private boolean reminderStatsSent = false;
+
     @Column(name = "reminder_3h_sent", nullable = false)
     private boolean reminder3hSent = false;
 
@@ -129,6 +135,22 @@ public class Match {
 
     public void setReminder24hSent(boolean reminder24hSent) {
         this.reminder24hSent = reminder24hSent;
+    }
+
+    public Instant getReminder24hSentAt() {
+        return reminder24hSentAt;
+    }
+
+    public void setReminder24hSentAt(Instant reminder24hSentAt) {
+        this.reminder24hSentAt = reminder24hSentAt;
+    }
+
+    public boolean isReminderStatsSent() {
+        return reminderStatsSent;
+    }
+
+    public void setReminderStatsSent(boolean reminderStatsSent) {
+        this.reminderStatsSent = reminderStatsSent;
     }
 
     public boolean isReminder3hSent() {

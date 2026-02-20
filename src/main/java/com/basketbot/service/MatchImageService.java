@@ -1,6 +1,8 @@
 package com.basketbot.service;
 
 import com.basketbot.model.Match;
+import com.basketbot.model.MatchPlayerStat;
+import com.basketbot.model.Player;
 import com.basketbot.model.Team;
 import org.springframework.stereotype.Service;
 
@@ -66,6 +68,74 @@ public class MatchImageService {
         Font oppFont = new Font(Font.SANS_SERIF, Font.PLAIN, 48);
         g.setFont(oppFont);
         drawCenteredString(g, "против " + opponent, WIDTH / 2, y + 40);
+
+        g.dispose();
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try {
+            ImageIO.write(image, PNG, out);
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new RuntimeException("Не удалось сгенерировать PNG", e);
+        }
+    }
+
+    /**
+     * Карточка «Игрок матча»: имя, номер, статистика (очки, подборы, передачи, минуты).
+     */
+    public byte[] generatePlayerCard(Team team, Match match, Player player, MatchPlayerStat stat) {
+        if (team == null || match == null || player == null || stat == null) {
+            return new byte[0];
+        }
+
+        BufferedImage image = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = image.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+
+        GradientPaint gradient = new GradientPaint(0, 0, new Color(102, 126, 234), WIDTH, HEIGHT, new Color(118, 75, 162));
+        g.setPaint(gradient);
+        g.fill(new RoundRectangle2D.Float(0, 0, WIDTH, HEIGHT, 0, 0));
+
+        g.setColor(Color.WHITE);
+
+        int padding = 80;
+        int y = padding;
+
+        Font titleFont = new Font(Font.SANS_SERIF, Font.BOLD, 52);
+        g.setFont(titleFont);
+        drawCenteredString(g, "⭐ ИГРОК МАТЧА", WIDTH / 2, y + 40);
+        y += 100;
+
+        String name = player.getName() != null ? player.getName() : "—";
+        Font nameFont = new Font(Font.SANS_SERIF, Font.BOLD, 64);
+        g.setFont(nameFont);
+        drawCenteredString(g, name.toUpperCase(), WIDTH / 2, y + 50);
+        y += 80;
+
+        if (player.getNumber() != null) {
+            Font numFont = new Font(Font.SANS_SERIF, Font.PLAIN, 48);
+            g.setFont(numFont);
+            drawCenteredString(g, "№ " + player.getNumber(), WIDTH / 2, y + 40);
+            y += 70;
+        }
+
+        String vsLine = team.getName() + " — " + match.getOpponent();
+        Font vsFont = new Font(Font.SANS_SERIF, Font.PLAIN, 36);
+        g.setFont(vsFont);
+        drawCenteredString(g, vsLine, WIDTH / 2, y + 30);
+        y += 80;
+
+        StringBuilder statsLine = new StringBuilder();
+        statsLine.append(stat.getPoints()).append(" очков");
+        statsLine.append("  ·  ").append(stat.getRebounds()).append(" подборов");
+        statsLine.append("  ·  ").append(stat.getAssists()).append(" передач");
+        if (stat.getMinutes() != null && stat.getMinutes() > 0) {
+            statsLine.append("  ·  ").append(stat.getMinutes()).append(" мин");
+        }
+        Font statsFont = new Font(Font.SANS_SERIF, Font.BOLD, 42);
+        g.setFont(statsFont);
+        drawCenteredString(g, statsLine.toString(), WIDTH / 2, y + 40);
 
         g.dispose();
 

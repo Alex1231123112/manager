@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { apiGet, apiPost } from "@/lib/api";
-import type { DashboardDto, ActionResult } from "@/lib/types";
+import { getUserFacingError } from "@/lib/errors";
+import type { DashboardDto, ActionResult, MemberDto } from "@/lib/types";
 
 function formatDate(s: string | null) {
   if (!s) return "—";
@@ -23,31 +24,68 @@ function formatDate(s: string | null) {
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardDto | null>(null);
+  const [members, setMembers] = useState<MemberDto[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [notifyText, setNotifyText] = useState("");
   const [notifySending, setNotifySending] = useState(false);
   const [notifyMessage, setNotifyMessage] = useState<{ type: "ok" | "err"; text: string } | null>(null);
 
-  useEffect(() => {
-    apiGet<DashboardDto>("/api/admin/dashboard").then((res) => {
+  function load() {
+    setLoadError(null);
+    setLoading(true);
+    Promise.all([
+      apiGet<DashboardDto>("/api/admin/dashboard"),
+      apiGet<MemberDto[]>("/api/admin/members"),
+    ]).then(([dashboardRes, membersRes]) => {
       setLoading(false);
-      if (res.ok && res.data) setData(res.data);
+      const networkFailed =
+        dashboardRes.status === 0 ||
+        dashboardRes.networkError ||
+        membersRes.status === 0 ||
+        membersRes.networkError;
+      if (networkFailed) {
+        setLoadError(getUserFacingError(0));
+        return;
+      }
+      if (dashboardRes.ok && dashboardRes.data) setData(dashboardRes.data);
+      if (membersRes.ok && Array.isArray(membersRes.data)) setMembers(membersRes.data);
     });
+  }
+
+  useEffect(() => {
+    load();
   }, []);
 
-  if (loading) return <div className="text-zinc-500">Загрузка…</div>;
+  if (loading && !data) return <div className="text-zinc-500">Загрузка…</div>;
+  if (loadError) {
+    return (
+      <div>
+        <h1 className="mb-6 text-2xl font-semibold text-zinc-800">Дашборд</h1>
+        <p className="mb-4 rounded-lg bg-amber-100 px-3 py-2 text-zinc-800">{loadError}</p>
+        <button
+          type="button"
+          onClick={() => load()}
+          className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+        >
+          Повторить
+        </button>
+      </div>
+    );
+  }
   if (!data) return <div className="text-zinc-600">Нет данных</div>;
 
   const next = data.nextMatch;
+  const memberCount = members.length;
 
   return (
     <div>
       <h1 className="mb-6 text-2xl font-semibold text-zinc-800">Дашборд</h1>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
-          <p className="text-sm text-zinc-500">Игроков в команде</p>
+          <p className="text-sm text-zinc-500">Участников в команде</p>
           <p className="text-2xl font-semibold text-zinc-800">
-            {data.playerCount}
+            {memberCount}
           </p>
         </div>
         <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
@@ -114,7 +152,7 @@ export default function DashboardPage() {
               setNotifyMessage({ type: "ok", text: res.data.message ?? "Отправлено" });
               setNotifyText("");
             } else {
-              setNotifyMessage({ type: "err", text: res.data?.data ?? res.error ?? "Ошибка" });
+              setNotifyMessage({ type: "err", text: getUserFacingError(res.status, res.data?.data ?? res.error) });
             }
           }}
           className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"

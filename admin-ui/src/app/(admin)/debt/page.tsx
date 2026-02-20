@@ -2,18 +2,27 @@
 
 import { useEffect, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api";
+import { getUserFacingError } from "@/lib/errors";
 import type { DebtListDto, ActionResult, PlayerDto } from "@/lib/types";
 
 export default function DebtPage() {
   const [data, setData] = useState<DebtListDto | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [playerName, setPlayerName] = useState("");
   const [amount, setAmount] = useState("");
+  const [notifyLoading, setNotifyLoading] = useState(false);
 
   function load() {
+    setLoadError(null);
+    setLoading(true);
     apiGet<DebtListDto>("/api/admin/debt").then((res) => {
       setLoading(false);
+      if (res.status === 0 || res.networkError) {
+        setLoadError(getUserFacingError(0));
+        return;
+      }
       if (res.ok && res.data) setData(res.data);
     });
   }
@@ -35,7 +44,20 @@ export default function DebtPage() {
       setAmount("");
       load();
     } else {
-      setMessage({ type: "err", text: res.data?.data ?? res.error ?? "Ошибка" });
+      setMessage({ type: "err", text: getUserFacingError(res.status, res.data?.data ?? res.error) });
+    }
+  }
+
+  async function notifyDebt() {
+    setMessage(null);
+    setNotifyLoading(true);
+    const res = await apiPost<ActionResult>("/api/admin/notify-debt", {});
+    setNotifyLoading(false);
+    if (res.ok && res.data) {
+      setMessage({ type: res.data.success ? "ok" : "err", text: res.data.message ?? res.data.data ?? "" });
+      if (res.data.success) load();
+    } else {
+      setMessage({ type: "err", text: getUserFacingError(res.status, res.data?.data ?? res.error) });
     }
   }
 
@@ -46,11 +68,26 @@ export default function DebtPage() {
       setMessage({ type: "ok", text: res.data.message ?? "Оплата отмечена" });
       load();
     } else {
-      setMessage({ type: "err", text: res.data?.data ?? res.error ?? "Ошибка" });
+      setMessage({ type: "err", text: getUserFacingError(res.status, res.data?.data ?? res.error) });
     }
   }
 
   if (loading) return <div className="text-zinc-500">Загрузка…</div>;
+  if (loadError) {
+    return (
+      <div>
+        <h1 className="mb-6 text-2xl font-semibold text-zinc-800">Долги</h1>
+        <p className="mb-4 rounded-lg bg-amber-100 px-3 py-2 text-zinc-800">{loadError}</p>
+        <button
+          type="button"
+          onClick={() => load()}
+          className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+        >
+          Повторить
+        </button>
+      </div>
+    );
+  }
 
   const debtors = data?.debtors ?? [];
 
@@ -99,9 +136,21 @@ export default function DebtPage() {
         </div>
       </form>
       <div className="rounded-xl border border-zinc-200 bg-white shadow-sm">
-        <h2 className="border-b border-zinc-200 px-4 py-3 text-lg font-medium text-zinc-800">
-          Должники ({debtors.length})
-        </h2>
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-zinc-200 px-4 py-3">
+          <h2 className="text-lg font-medium text-zinc-800">
+            Должники ({debtors.length})
+          </h2>
+          {debtors.length > 0 && (
+            <button
+              type="button"
+              onClick={() => notifyDebt()}
+              disabled={notifyLoading}
+              className="rounded-lg bg-amber-500 px-4 py-2 text-white hover:bg-amber-600 disabled:opacity-50"
+            >
+              {notifyLoading ? "Отправка…" : "Напомнить о взносе"}
+            </button>
+          )}
+        </div>
         {debtors.length === 0 ? (
           <p className="p-4 text-zinc-500">Нет должников</p>
         ) : (

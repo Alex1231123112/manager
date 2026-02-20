@@ -27,6 +27,18 @@ public class MatchService {
         return matchRepository.findByTeamIdOrderByDateDesc(teamId);
     }
 
+    /** Будущие игры (дата >= сейчас), ближайшие первые. */
+    @Transactional(readOnly = true)
+    public List<Match> findFutureByTeamId(Long teamId) {
+        return matchRepository.findByTeamIdAndDateAfterOrderByDateAsc(teamId, Instant.now());
+    }
+
+    /** Прошедшие игры (дата < сейчас), последние первые. */
+    @Transactional(readOnly = true)
+    public List<Match> findPastByTeamId(Long teamId) {
+        return matchRepository.findByTeamIdAndDateBeforeOrderByDateDesc(teamId, Instant.now());
+    }
+
     @Transactional
     public Match createMatch(Long teamId, String opponent, Instant date, String location) {
         Match match = new Match();

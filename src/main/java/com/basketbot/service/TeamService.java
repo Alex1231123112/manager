@@ -46,4 +46,11 @@ public class TeamService {
         team.setChannelTelegramChatId(channelTelegramChatId != null && !channelTelegramChatId.isBlank() ? channelTelegramChatId.trim() : null);
         return teamRepository.save(team);
     }
+
+    @Transactional
+    public Team setGroupChatId(Long teamId, String groupTelegramChatId) {
+        Team team = teamRepository.getReferenceById(teamId);
+        team.setGroupTelegramChatId(groupTelegramChatId != null && !groupTelegramChatId.isBlank() ? groupTelegramChatId.trim() : null);
+        return teamRepository.save(team);
+    }
 }

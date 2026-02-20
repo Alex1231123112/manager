@@ -5,6 +5,8 @@ import com.basketbot.model.Invitation;
 import com.basketbot.model.TeamMember;
 import com.basketbot.repository.InvitationRepository;
 import com.basketbot.repository.TeamRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,6 +18,7 @@ import java.util.UUID;
 @Service
 public class InvitationService {
 
+    private static final Logger log = LoggerFactory.getLogger(InvitationService.class);
     private static final int DEFAULT_EXPIRES_DAYS = 7;
 
     private final InvitationRepository invitationRepository;
@@ -64,20 +67,34 @@ public class InvitationService {
      * Приглашение не удаляется — по одной ссылке могут перейти несколько человек (массовое добавление).
      *
      * @param telegramUsername опционально — @username из Telegram для отображения в админке
+     * @param telegramDisplayName опционально — имя из профиля Telegram (first_name + last_name) для поля «Имя» в админке
      * @return имя команды и роль при успехе
      */
     @Transactional
-    public Optional<InvitationUseResult> use(String code, String telegramUserId, String telegramUsername) {
-        if (telegramUserId == null || telegramUserId.isBlank()) return Optional.empty();
-        Optional<Invitation> opt = invitationRepository.findByCode(code != null ? code.trim() : "");
-        if (opt.isEmpty()) return Optional.empty();
+    public Optional<InvitationUseResult> use(String code, String telegramUserId, String telegramUsername, String telegramDisplayName) {
+        if (telegramUserId == null || telegramUserId.isBlank()) {
+            log.warn("Invitation use: empty telegramUserId");
+            return Optional.empty();
+        }
+        String codeTrimmed = code != null ? code.trim() : "";
+        Optional<Invitation> opt = invitationRepository.findByCode(codeTrimmed);
+        if (opt.isEmpty()) {
+            log.warn("Invitation use: code not found in DB, code={}", codeTrimmed);
+            return Optional.empty();
+        }
         Invitation inv = opt.get();
-        if (inv.getExpiresAt().isBefore(Instant.now())) return Optional.empty();
+        if (inv.getExpiresAt().isBefore(Instant.now())) {
+            log.warn("Invitation use: expired, code={}, expiresAt={}", codeTrimmed, inv.getExpiresAt());
+            return Optional.empty();
+        }
         Long teamId = inv.getTeam().getId();
         TeamMember.Role role = inv.getRole();
         teamMemberService.setRoleByAdmin(teamId, telegramUserId, role);
         if (telegramUsername != null && !telegramUsername.isBlank()) {
             teamMemberService.ensureTelegramUsername(teamId, telegramUserId, telegramUsername);
+        }
+        if (telegramDisplayName != null && !telegramDisplayName.isBlank()) {
+            teamMemberService.updateDisplayName(teamId, telegramUserId, telegramDisplayName.trim());
         }
         String teamName = inv.getTeam().getName();
         return Optional.of(new InvitationUseResult(teamName, role));

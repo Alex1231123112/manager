@@ -7,19 +7,38 @@ export function apiUrl(path: string): string {
   return `${base}${p}`;
 }
 
+export type ApiResult<T> = {
+  ok: boolean;
+  status: number;
+  data?: T;
+  error?: string;
+  /** true при сетевой ошибке (fetch выбросил или таймаут) */
+  networkError?: boolean;
+};
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
-): Promise<{ ok: boolean; status: number; data?: T; error?: string }> {
+): Promise<ApiResult<T>> {
   const url = apiUrl(path);
-  const res = await fetch(url, {
-    ...options,
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...options,
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers,
+      },
+    });
+  } catch {
+    return {
+      ok: false,
+      status: 0,
+      error: "Нет связи с сервером. Проверьте подключение.",
+      networkError: true,
+    };
+  }
   const contentType = res.headers.get("content-type");
   let data: T | undefined;
   if (contentType?.includes("application/json")) {

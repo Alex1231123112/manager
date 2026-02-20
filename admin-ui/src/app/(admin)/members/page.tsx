@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiGet, apiPatch } from "@/lib/api";
-import type { MemberDto, ActionResult } from "@/lib/types";
+import { apiGet, apiPatch, apiPut } from "@/lib/api";
+import { getUserFacingError } from "@/lib/errors";
+import type { MemberDto, MemberAttendanceDto, ActionResult } from "@/lib/types";
 
 const ROLE_LABELS: Record<string, string> = {
   ADMIN: "Админ",
@@ -16,11 +17,17 @@ const STATUS_LABELS: Record<string, string> = {
   NOT_PAID: "Не оплатил",
 };
 
-function formatContact(m: MemberDto): string {
+function telegramUsername(m: MemberDto): string | null {
   if (m.telegramUsername && m.telegramUsername.trim()) {
-    return m.telegramUsername.startsWith("@") ? m.telegramUsername : "@" + m.telegramUsername;
+    const u = m.telegramUsername.trim();
+    return u.startsWith("@") ? u.slice(1) : u;
   }
-  return "—";
+  return null;
+}
+
+function formatContact(m: MemberDto): string {
+  const u = telegramUsername(m);
+  return u ? "@" + u : "—";
 }
 
 function debtValue(m: MemberDto): number {
@@ -33,22 +40,37 @@ function debtValue(m: MemberDto): number {
 export default function MembersPage() {
   const [list, setList] = useState<MemberDto[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [editing, setEditing] = useState<MemberDto | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>("");
   const [form, setForm] = useState({ displayName: "", role: "PLAYER", number: "" as string, status: "ACTIVE", debt: "" as string, isActive: true });
+  const [memberAttendance, setMemberAttendance] = useState<MemberAttendanceDto[]>([]);
+  const [memberAttendanceLoading, setMemberAttendanceLoading] = useState(false);
+  const [memberAttendanceSaving, setMemberAttendanceSaving] = useState<number | null>(null);
 
   function load() {
+    setLoadError(null);
+    setLoading(true);
     apiGet<MemberDto[]>("/api/admin/members").then((res) => {
       setLoading(false);
+      if (res.status === 0 || res.networkError) {
+        setLoadError(getUserFacingError(0));
+        return;
+      }
       if (res.ok && Array.isArray(res.data)) setList(res.data);
     });
   }
+
+  const filteredList = statusFilter
+    ? list.filter((m) => m.status === statusFilter)
+    : list;
 
   useEffect(() => {
     load();
   }, []);
 
-  function openEdit(m: MemberDto) {
+  async function openEdit(m: MemberDto) {
     setEditing(m);
     setForm({
       displayName: m.displayName?.trim() ?? "",
@@ -58,6 +80,28 @@ export default function MembersPage() {
       debt: String(debtValue(m)),
       isActive: m.isActive ?? true,
     });
+    setMemberAttendance([]);
+    setMemberAttendanceLoading(true);
+    const res = await apiGet<MemberAttendanceDto[]>(`/api/admin/members/${encodeURIComponent(m.telegramUserId)}/attendance`);
+    setMemberAttendanceLoading(false);
+    if (res.ok && Array.isArray(res.data)) setMemberAttendance(res.data);
+  }
+
+  async function cancelMemberAttendance(matchId: number) {
+    if (!editing) return;
+    setMemberAttendanceSaving(matchId);
+    const res = await apiPut<ActionResult>(`/api/admin/matches/${matchId}/attendance`, {
+      telegramUserId: editing.telegramUserId,
+      status: "NOT_COMING",
+    });
+    setMemberAttendanceSaving(null);
+    if (res.ok && res.data?.success) {
+      setMemberAttendance((prev) =>
+        prev.map((a) => (a.matchId === matchId ? { ...a, status: "NOT_COMING" } : a))
+      );
+    } else {
+      setMessage({ type: "err", text: getUserFacingError(res.status, res.data?.data ?? res.error) });
+    }
   }
 
   async function saveMember() {
@@ -79,7 +123,7 @@ export default function MembersPage() {
       setEditing(null);
       load();
     } else {
-      setMessage({ type: "err", text: res.data?.data ?? res.error ?? "Ошибка" });
+      setMessage({ type: "err", text: getUserFacingError(res.status, res.data?.data ?? res.error) });
     }
   }
 
@@ -102,7 +146,7 @@ export default function MembersPage() {
       setMessage({ type: "ok", text: isActive ? "Участник активирован" : "Участник деактивирован" });
       load();
     } else {
-      setMessage({ type: "err", text: res.data?.data ?? res.error ?? "Ошибка" });
+      setMessage({ type: "err", text: getUserFacingError(res.status, res.data?.data ?? res.error) });
     }
   }
 
@@ -125,19 +169,49 @@ export default function MembersPage() {
       setMessage({ type: "ok", text: "Роль обновлена" });
       load();
     } else {
-      setMessage({ type: "err", text: res.data?.data ?? res.error ?? "Ошибка" });
+      setMessage({ type: "err", text: getUserFacingError(res.status, res.data?.data ?? res.error) });
     }
   }
 
   if (loading) return <div className="text-zinc-500">Загрузка…</div>;
+  if (loadError) {
+    return (
+      <div>
+        <h1 className="mb-6 text-2xl font-semibold text-zinc-800">Участники команды</h1>
+        <p className="mb-4 rounded-lg bg-amber-100 px-3 py-2 text-zinc-800">{loadError}</p>
+        <button
+          type="button"
+          onClick={() => load()}
+          className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+        >
+          Повторить
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-zinc-800">Участники команды</h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          Состав и роли: имя, номер, статус, долг. Редактирование по кнопке «Редактировать». Деактивация скрывает участника из активного состава в боте (без удаления данных).
-        </p>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-zinc-800">Состав команды</h1>
+          <p className="mt-1 text-sm text-zinc-500">
+            Имя, контакты (Telegram), номер, статус, долг. Редактирование по кнопке «Редактировать». Деактивация скрывает участника из активного состава в боте.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-sm font-medium text-zinc-600">Статус:</label>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="rounded-lg border border-zinc-300 px-3 py-2 text-sm"
+          >
+            <option value="">Все</option>
+            {Object.entries(STATUS_LABELS).map(([k, v]) => (
+              <option key={k} value={k}>{v}</option>
+            ))}
+          </select>
+        </div>
       </div>
       {message && (
         <p
@@ -215,6 +289,46 @@ export default function MembersPage() {
                 />
                 <span className="text-sm text-zinc-700">Активен (участвует в составе)</span>
               </label>
+              <div className="border-t border-zinc-200 pt-4">
+                <h3 className="mb-2 text-sm font-medium text-zinc-700">Участие в матчах</h3>
+                {memberAttendanceLoading ? (
+                  <p className="text-sm text-zinc-500">Загрузка…</p>
+                ) : memberAttendance.length === 0 ? (
+                  <p className="text-sm text-zinc-500">Нет предстоящих матчей</p>
+                ) : (
+                  <ul className="space-y-2 text-sm">
+                    {memberAttendance.map((a) => {
+                      const statusLabel =
+                        a.status === "COMING"
+                          ? "Буду"
+                          : a.status === "LATE"
+                            ? "Опоздаю"
+                            : a.status === "NOT_COMING"
+                              ? "Не смогу"
+                              : "—";
+                      const canCancel = a.status === "COMING" || a.status === "LATE";
+                      const dateStr = a.date ? new Date(a.date).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" }) : "";
+                      return (
+                        <li key={a.matchId} className="flex items-center justify-between gap-2 rounded border border-zinc-100 bg-zinc-50/50 px-2 py-1.5">
+                          <span>
+                            {a.opponent || "Матч"} {dateStr && ` · ${dateStr}`} — {statusLabel}
+                          </span>
+                          {canCancel && (
+                            <button
+                              type="button"
+                              onClick={() => cancelMemberAttendance(a.matchId)}
+                              disabled={memberAttendanceSaving === a.matchId}
+                              className="text-amber-600 hover:underline disabled:opacity-50"
+                            >
+                              {memberAttendanceSaving === a.matchId ? "…" : "Отменить участие"}
+                            </button>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
             </div>
             <div className="mt-6 flex justify-end gap-2">
               <button
@@ -241,7 +355,7 @@ export default function MembersPage() {
           <thead className="bg-zinc-50">
             <tr>
               <th className="px-4 py-2 text-left text-sm font-medium text-zinc-600">Имя</th>
-              <th className="px-4 py-2 text-left text-sm font-medium text-zinc-600">Контакт</th>
+              <th className="px-4 py-2 text-left text-sm font-medium text-zinc-600">Контакты (Telegram)</th>
               <th className="px-4 py-2 text-left text-sm font-medium text-zinc-600">№</th>
               <th className="px-4 py-2 text-left text-sm font-medium text-zinc-600">Статус</th>
               <th className="px-4 py-2 text-left text-sm font-medium text-zinc-600">Долг</th>
@@ -251,20 +365,35 @@ export default function MembersPage() {
             </tr>
           </thead>
           <tbody>
-            {list.length === 0 ? (
+            {filteredList.length === 0 ? (
               <tr>
                 <td colSpan={8} className="px-4 py-6 text-center text-zinc-500">
-                  Нет записей. Участники появляются после создания команды в боте и приглашений или назначения ролей (/setrole в Telegram).
+                  {list.length === 0
+                    ? "Нет записей. Участники появляются после создания команды в боте и приглашений."
+                    : "Нет участников с выбранным статусом."}
                 </td>
               </tr>
             ) : (
-              list.map((m) => (
+              filteredList.map((m) => (
                 <tr
                   key={m.telegramUserId}
                   className={`border-t border-zinc-100 ${!m.isActive ? "bg-zinc-50 text-zinc-500" : ""}`}
                 >
                   <td className="px-4 py-2 font-medium">{m.displayName?.trim() || "—"}</td>
-                  <td className="px-4 py-2 text-zinc-600">{formatContact(m)}</td>
+                  <td className="px-4 py-2 text-zinc-600">
+                    {telegramUsername(m) ? (
+                      <a
+                        href={`https://t.me/${telegramUsername(m)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        {formatContact(m)}
+                      </a>
+                    ) : (
+                      formatContact(m)
+                    )}
+                  </td>
                   <td className="px-4 py-2">{m.number != null ? m.number : "—"}</td>
                   <td className="px-4 py-2">{STATUS_LABELS[m.status] ?? m.status}</td>
                   <td className="px-4 py-2">{debtValue(m) > 0 ? `${debtValue(m)} ₽` : "—"}</td>

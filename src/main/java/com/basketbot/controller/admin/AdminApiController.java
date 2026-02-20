@@ -1,10 +1,18 @@
 package com.basketbot.controller.admin;
 
+import com.basketbot.model.Event;
+import com.basketbot.model.FinanceEntry;
 import com.basketbot.model.Match;
+import com.basketbot.model.LeagueTableRow;
+import com.basketbot.model.MatchPlayerStat;
 import com.basketbot.model.Player;
 import com.basketbot.model.Team;
 import com.basketbot.model.Invitation;
 import com.basketbot.model.TeamMember;
+import com.basketbot.service.EventService;
+import com.basketbot.service.FinanceEntryService;
+import com.basketbot.service.LeagueTableService;
+import com.basketbot.service.MatchPlayerStatService;
 import com.basketbot.service.InvitationService;
 import com.basketbot.service.MatchImageService;
 import com.basketbot.service.TeamMemberService;
@@ -33,6 +41,7 @@ import org.slf4j.LoggerFactory;
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -56,13 +65,19 @@ public class AdminApiController {
     private final TeamMemberService teamMemberService;
     private final SystemSettingsService systemSettingsService;
     private final InvitationService invitationService;
+    private final FinanceEntryService financeEntryService;
+    private final EventService eventService;
+    private final MatchPlayerStatService matchPlayerStatService;
+    private final LeagueTableService leagueTableService;
     private final AuthenticationConfiguration authConfig;
 
     public AdminApiController(TeamService teamService, PlayerService playerService,
                              MatchService matchService, MatchPostService matchPostService,
                              MatchImageService matchImageService, TelegramClient telegramClient,
                              TeamMemberService teamMemberService, SystemSettingsService systemSettingsService,
-                             InvitationService invitationService, AuthenticationConfiguration authConfig) {
+                             InvitationService invitationService, FinanceEntryService financeEntryService,
+                             EventService eventService, MatchPlayerStatService matchPlayerStatService,
+                             LeagueTableService leagueTableService, AuthenticationConfiguration authConfig) {
         this.teamService = teamService;
         this.playerService = playerService;
         this.matchService = matchService;
@@ -72,6 +87,10 @@ public class AdminApiController {
         this.teamMemberService = teamMemberService;
         this.systemSettingsService = systemSettingsService;
         this.invitationService = invitationService;
+        this.financeEntryService = financeEntryService;
+        this.eventService = eventService;
+        this.matchPlayerStatService = matchPlayerStatService;
+        this.leagueTableService = leagueTableService;
         this.authConfig = authConfig;
     }
 
@@ -309,6 +328,54 @@ public class AdminApiController {
         }
     }
 
+    @GetMapping("/matches/{id}/stats")
+    public ResponseEntity<MatchStatsDto> getMatchStats(@PathVariable Long id, HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        if (matchService.findByIdAndTeamId(id, teamId).isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        List<Player> players = playerService.findByTeamId(teamId);
+        List<MatchPlayerStat> stats = matchPlayerStatService.findByMatchId(id);
+        List<MatchStatRowDto> rows = players.stream()
+                .map(p -> {
+                    MatchPlayerStat stat = stats.stream()
+                            .filter(s -> s.getPlayer().getId().equals(p.getId()))
+                            .findFirst()
+                            .orElse(null);
+                    return new MatchStatRowDto(
+                            p.getId(),
+                            p.getName(),
+                            p.getNumber(),
+                            stat != null ? stat.getMinutes() : null,
+                            stat != null ? stat.getPoints() : 0,
+                            stat != null ? stat.getRebounds() : 0,
+                            stat != null ? stat.getAssists() : 0,
+                            stat != null ? stat.getFouls() : 0,
+                            stat != null ? stat.getPlusMinus() : null,
+                            stat != null && stat.isMvp()
+                    );
+                })
+                .collect(Collectors.toList());
+        Optional<Player> mvp = matchPlayerStatService.findMvpForMatch(id);
+        return ResponseEntity.ok(new MatchStatsDto(rows, mvp.map(Player::getName).orElse(null)));
+    }
+
+    @PostMapping("/matches/{id}/stats")
+    public ResponseEntity<ActionResult> saveMatchStats(@PathVariable Long id, @RequestBody MatchStatsSaveDto dto, HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        if (matchService.findByIdAndTeamId(id, teamId).isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        List<MatchPlayerStatService.StatEntry> entries = dto.stats() != null ? dto.stats().stream()
+                .map(s -> new MatchPlayerStatService.StatEntry(
+                        s.playerId(), s.minutes(), s.points(), s.rebounds(), s.assists(), s.fouls(), s.plusMinus(), s.mvp()))
+                .collect(Collectors.toList()) : List.of();
+        matchPlayerStatService.saveStats(id, teamId, entries);
+        return ResponseEntity.ok(new ActionResult(true, "Статистика сохранена.", null));
+    }
+
     @GetMapping("/matches/{id}/card")
     public ResponseEntity<byte[]> matchCard(@PathVariable Long id, HttpSession session) {
         Long teamId = requireTeamId(session);
@@ -323,6 +390,27 @@ public class AdminApiController {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.IMAGE_PNG);
         headers.setContentDispositionFormData("attachment", "result.png");
+        return ResponseEntity.ok().headers(headers).body(png);
+    }
+
+    @GetMapping("/matches/{id}/player-card")
+    public ResponseEntity<byte[]> playerCard(@PathVariable Long id, @RequestParam Long playerId, HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.notFound().build();
+        Optional<Match> matchOpt = matchService.findByIdAndTeamId(id, teamId);
+        if (matchOpt.isEmpty()) return ResponseEntity.notFound().build();
+        Optional<Player> playerOpt = playerService.findByIdAndTeamId(playerId, teamId);
+        if (playerOpt.isEmpty()) return ResponseEntity.notFound().build();
+        Optional<MatchPlayerStat> statOpt = matchPlayerStatService.findByMatchId(id).stream()
+                .filter(s -> s.getPlayer().getId().equals(playerId))
+                .findFirst();
+        if (statOpt.isEmpty()) return ResponseEntity.notFound().build();
+        Team team = teamService.findById(teamId).orElse(null);
+        byte[] png = matchImageService.generatePlayerCard(team, matchOpt.get(), playerOpt.get(), statOpt.get());
+        if (png.length == 0) return ResponseEntity.notFound().build();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.IMAGE_PNG);
+        headers.setContentDispositionFormData("attachment", "player-card.png");
         return ResponseEntity.ok().headers(headers).body(png);
     }
 
@@ -384,9 +472,11 @@ public class AdminApiController {
         if (teamId == null) return ResponseEntity.status(403).build();
         Team team = teamService.findById(teamId).orElse(null);
         if (team == null) return ResponseEntity.status(403).build();
-        String chatId = team.getTelegramChatId();
+        String chatId = (team.getGroupTelegramChatId() != null && !team.getGroupTelegramChatId().isBlank())
+                ? team.getGroupTelegramChatId()
+                : team.getTelegramChatId();
         if (chatId == null || chatId.isBlank()) {
-            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Добавьте бота в чат команды и напишите там /start, чтобы привязать чат."));
+            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Укажите групповой чат в Настройках или добавьте бота в чат команды и напишите там /start."));
         }
         String message = body != null && body.message() != null ? body.message().trim() : "";
         if (message.isEmpty()) {
@@ -413,13 +503,48 @@ public class AdminApiController {
         }
     }
 
+    @PostMapping("/notify-debt")
+    public ResponseEntity<ActionResult> notifyDebt(HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        Team team = teamService.findById(teamId).orElse(null);
+        if (team == null) return ResponseEntity.status(403).build();
+        String chatId = (team.getGroupTelegramChatId() != null && !team.getGroupTelegramChatId().isBlank())
+                ? team.getGroupTelegramChatId()
+                : team.getTelegramChatId();
+        if (chatId == null || chatId.isBlank()) {
+            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Укажите групповой чат в Настройках или добавьте бота в чат команды."));
+        }
+        List<Player> debtors = playerService.findWithDebt(teamId);
+        if (debtors.isEmpty()) {
+            return ResponseEntity.ok(new ActionResult(true, "Нет должников. Напоминание не отправлено.", null));
+        }
+        StringBuilder sb = new StringBuilder("💰 Напоминание о взносе.\n\nДолжники:\n");
+        for (Player p : debtors) {
+            sb.append("• ").append(p.getName() != null ? p.getName() : "—");
+            if (p.getNumber() != null) sb.append(" №").append(p.getNumber());
+            sb.append(" — ").append(p.getDebt() != null ? p.getDebt().stripTrailingZeros().toPlainString() : "0").append(" ₽\n");
+        }
+        sb.append("\nПросьба оплатить до следующей игры.");
+        String message = sb.toString();
+        if (message.length() > 4000) message = message.substring(0, 4000);
+        try {
+            telegramClient.execute(SendMessage.builder().chatId(chatId).text(message).build());
+            return ResponseEntity.ok(new ActionResult(true, "Напоминание о взносе отправлено в чат команды.", null));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Не удалось отправить: " + e.getMessage()));
+        }
+    }
+
     @GetMapping("/settings")
     public ResponseEntity<SettingsDto> settings(HttpSession session) {
         Long teamId = requireTeamId(session);
         if (teamId == null) return ResponseEntity.status(403).build();
         Team team = teamService.findById(teamId).orElse(null);
         if (team == null) return ResponseEntity.status(403).build();
-        return ResponseEntity.ok(new SettingsDto(team.getChannelTelegramChatId() != null ? team.getChannelTelegramChatId() : ""));
+        String channel = team.getChannelTelegramChatId() != null ? team.getChannelTelegramChatId() : "";
+        String group = team.getGroupTelegramChatId() != null ? team.getGroupTelegramChatId() : "";
+        return ResponseEntity.ok(new SettingsDto(channel, group));
     }
 
     @PostMapping("/settings")
@@ -427,6 +552,7 @@ public class AdminApiController {
         Long teamId = requireTeamId(session);
         if (teamId == null) return ResponseEntity.status(403).build();
         teamService.setChannelChatId(teamId, dto.channelId());
+        teamService.setGroupChatId(teamId, dto != null ? dto.groupChatId() : null);
         return ResponseEntity.ok(new ActionResult(true, "Настройки сохранены.", null));
     }
 
@@ -440,6 +566,123 @@ public class AdminApiController {
     public ResponseEntity<ActionResult> saveSystemSettings(@RequestBody SystemSettingsDto dto) {
         systemSettingsService.setAdminTelegramUsername(dto.adminTelegramUsername());
         return ResponseEntity.ok(new ActionResult(true, "Сохранено.", null));
+    }
+
+    @GetMapping("/finance")
+    public ResponseEntity<List<FinanceEntryDto>> finance(HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        List<FinanceEntryDto> list = financeEntryService.findByTeamId(teamId).stream()
+                .map(e -> new FinanceEntryDto(e.getId(), e.getType().name(), e.getAmount(), e.getDescription(), e.getEntryDate().toString()))
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(list);
+    }
+
+    @PostMapping("/finance")
+    public ResponseEntity<ActionResult> createFinanceEntry(@RequestBody FinanceCreateDto dto, HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        if (dto == null || dto.type() == null || dto.type().isBlank()) {
+            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Укажите тип: INCOME или EXPENSE"));
+        }
+        FinanceEntry.Type type;
+        try {
+            type = FinanceEntry.Type.valueOf(dto.type().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Тип: INCOME или EXPENSE"));
+        }
+        BigDecimal amount = dto.amount() != null ? dto.amount() : BigDecimal.ZERO;
+        LocalDate date = dto.entryDate() != null && !dto.entryDate().isBlank()
+                ? LocalDate.parse(dto.entryDate())
+                : LocalDate.now();
+        financeEntryService.create(teamId, type, amount, dto.description(), date);
+        return ResponseEntity.ok(new ActionResult(true, "Запись добавлена.", null));
+    }
+
+    @DeleteMapping("/finance/{id}")
+    public ResponseEntity<ActionResult> deleteFinanceEntry(@PathVariable Long id, HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        financeEntryService.deleteByIdAndTeamId(id, teamId);
+        return ResponseEntity.ok(new ActionResult(true, "Запись удалена.", null));
+    }
+
+    @GetMapping("/events")
+    public ResponseEntity<List<EventDto>> events(HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        List<EventDto> list = eventService.findByTeamId(teamId).stream()
+                .map(e -> new EventDto(e.getId(), e.getTitle(), e.getEventType().name(), e.getEventDate().toString(),
+                        e.getLocation(), e.getDescription()))
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(list);
+    }
+
+    @PostMapping("/events")
+    public ResponseEntity<ActionResult> createEvent(@RequestBody EventCreateDto dto, HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        if (dto == null || dto.title() == null || dto.title().isBlank()) {
+            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Укажите название события"));
+        }
+        Event.EventType type = Event.EventType.TRAINING;
+        if (dto.eventType() != null && !dto.eventType().isBlank()) {
+            try {
+                type = Event.EventType.valueOf(dto.eventType().toUpperCase());
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        Instant eventDate = dto.eventDate() != null && !dto.eventDate().isBlank()
+                ? Instant.parse(dto.eventDate())
+                : Instant.now();
+        Event event = eventService.create(teamId, dto.title(), type, eventDate, dto.location(), dto.description());
+        Team team = teamService.findById(teamId).orElse(null);
+        if (team != null) {
+            String chatId = (team.getGroupTelegramChatId() != null && !team.getGroupTelegramChatId().isBlank())
+                    ? team.getGroupTelegramChatId()
+                    : team.getTelegramChatId();
+            if (chatId != null && !chatId.isBlank()) {
+                String timeStr = event.getEventDate().atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));
+                String loc = (event.getLocation() != null && !event.getLocation().isBlank()) ? "\n🏟️ " + event.getLocation() : "";
+                String msg = "[НОВОЕ СОБЫТИЕ]\n" + (type == Event.EventType.TRAINING ? "🏋️ " : "🏀 ") + event.getTitle() + "\n📅 " + timeStr + loc;
+                try {
+                    telegramClient.execute(SendMessage.builder().chatId(chatId).text(msg).build());
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return ResponseEntity.ok(new ActionResult(true, "Событие создано и отправлено в чат команды.", null));
+    }
+
+    @DeleteMapping("/events/{id}")
+    public ResponseEntity<ActionResult> deleteEvent(@PathVariable Long id, HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        eventService.deleteByIdAndTeamId(id, teamId);
+        return ResponseEntity.ok(new ActionResult(true, "Событие удалено.", null));
+    }
+
+    @GetMapping("/finance/report")
+    public ResponseEntity<FinanceReportDto> financeReport(
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to,
+            HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        LocalDate fromDate = (from != null && !from.isBlank()) ? LocalDate.parse(from) : LocalDate.now().withDayOfMonth(1);
+        LocalDate toDate = (to != null && !to.isBlank()) ? LocalDate.parse(to) : LocalDate.now();
+        if (fromDate.isAfter(toDate)) {
+            LocalDate t = fromDate;
+            fromDate = toDate;
+            toDate = t;
+        }
+        BigDecimal income = financeEntryService.totalIncome(teamId, fromDate, toDate);
+        BigDecimal expense = financeEntryService.totalExpense(teamId, fromDate, toDate);
+        BigDecimal balance = income.subtract(expense);
+        List<FinanceEntryDto> entries = financeEntryService.findByTeamIdAndDateBetween(teamId, fromDate, toDate).stream()
+                .map(e -> new FinanceEntryDto(e.getId(), e.getType().name(), e.getAmount(), e.getDescription(), e.getEntryDate().toString()))
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(new FinanceReportDto(fromDate.toString(), toDate.toString(), income, expense, balance, entries));
     }
 
     private TeamDto toTeamDto(Team t) {
@@ -475,7 +718,7 @@ public class AdminApiController {
     public record ActionResult(boolean success, String message, String data) {}
     public record DebtListDto(List<PlayerDto> debtors) {}
     public record DebtSetDto(String playerName, String amount) {}
-    public record SettingsDto(String channelId) {}
+    public record SettingsDto(String channelId, String groupChatId) {}
     public record MemberDto(String telegramUserId, String telegramUsername, String displayName, String role,
                             Integer number, String status, java.math.BigDecimal debt, boolean isActive) {}
     public record MemberUpdateRequest(String displayName, String role, Boolean isActive, Integer number, String status, java.math.BigDecimal debt) {}
@@ -484,4 +727,45 @@ public class AdminApiController {
     public record InvitationCreateRequest(String role, Integer expiresInDays) {}
     public record InvitationCreateResponse(boolean success, InvitationDto invitation, String error) {}
     public record NotifyRequest(String message) {}
+    public record FinanceEntryDto(Long id, String type, BigDecimal amount, String description, String entryDate) {}
+    public record FinanceCreateDto(String type, BigDecimal amount, String description, String entryDate) {}
+    public record FinanceReportDto(String from, String to, BigDecimal totalIncome, BigDecimal totalExpense, BigDecimal balance, List<FinanceEntryDto> entries) {}
+    public record EventDto(Long id, String title, String eventType, String eventDate, String location, String description) {}
+    public record EventCreateDto(String title, String eventType, String eventDate, String location, String description) {}
+
+    @GetMapping("/league-table")
+    public ResponseEntity<List<LeagueTableRowDto>> leagueTable(HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        List<LeagueTableRowDto> list = leagueTableService.findByTeamId(teamId).stream()
+                .map(r -> new LeagueTableRowDto(r.getId(), r.getPosition(), r.getTeamName(), r.getWins(), r.getLosses(), r.getPointsDiff()))
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(list);
+    }
+
+    @PostMapping("/league-table")
+    public ResponseEntity<ActionResult> addLeagueTableRow(@RequestBody LeagueTableRowCreateDto dto, HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        if (dto == null || dto.teamName() == null || dto.teamName().isBlank()) {
+            return ResponseEntity.badRequest().body(new ActionResult(false, null, "Укажите название команды"));
+        }
+        leagueTableService.create(teamId, dto.position() != null ? dto.position() : 1, dto.teamName(), dto.wins() != null ? dto.wins() : 0, dto.losses() != null ? dto.losses() : 0, dto.pointsDiff() != null ? dto.pointsDiff() : 0);
+        return ResponseEntity.ok(new ActionResult(true, "Строка добавлена.", null));
+    }
+
+    @DeleteMapping("/league-table/{id}")
+    public ResponseEntity<ActionResult> deleteLeagueTableRow(@PathVariable Long id, HttpSession session) {
+        Long teamId = requireTeamId(session);
+        if (teamId == null) return ResponseEntity.status(403).build();
+        leagueTableService.deleteByIdAndTeamId(id, teamId);
+        return ResponseEntity.ok(new ActionResult(true, "Удалено.", null));
+    }
+
+    public record LeagueTableRowDto(Long id, int position, String teamName, int wins, int losses, int pointsDiff) {}
+    public record LeagueTableRowCreateDto(Integer position, String teamName, Integer wins, Integer losses, Integer pointsDiff) {}
+    public record MatchStatRowDto(Long playerId, String playerName, Integer number, Integer minutes, int points, int rebounds, int assists, int fouls, Integer plusMinus, boolean mvp) {}
+    public record MatchStatsDto(List<MatchStatRowDto> stats, String mvpPlayerName) {}
+    public record MatchStatsSaveDto(List<MatchStatRowSaveDto> stats) {}
+    public record MatchStatRowSaveDto(Long playerId, Integer minutes, Integer points, Integer rebounds, Integer assists, Integer fouls, Integer plusMinus, Boolean mvp) {}
 }

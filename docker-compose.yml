@@ -45,6 +45,7 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ""
     container_name: basketbot-admin-ui
+    restart: unless-stopped
     environment:
       API_BACKEND_URL: http://app:8080
     ports:
@@ -53,6 +54,16 @@ services:
       app:
         condition: service_healthy
     # Фронт вызывает /api/... (тот же origin), Next.js проксирует на app:8080
+    # После доработок фронта пересобрать образ: docker compose build admin-ui && docker compose up -d admin-ui
+
+  # Запуск автотестов (H2 in-memory, без Postgres): docker compose run --rm tests
+  tests:
+    image: maven:3.9-eclipse-temurin-17-alpine
+    container_name: basketbot-tests
+    working_dir: /project
+    volumes:
+      - .:/project
+    command: mvn test -B
 
 volumes:
   postgres_data:

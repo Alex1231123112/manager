@@ -86,6 +86,26 @@ public class TeamMemberService {
         return teamMemberRepository.findByTeamId(teamId);
     }
 
+    /** Первая команда пользователя (по участию), активный участник. Нужно для бота: опрос из лички. */
+    @Transactional(readOnly = true)
+    public Optional<Team> findFirstTeamByTelegramUserId(String telegramUserId) {
+        if (telegramUserId == null || telegramUserId.isBlank()) return Optional.empty();
+        return teamMemberRepository.findByTelegramUserId(telegramUserId).stream()
+                .filter(TeamMember::isActive)
+                .findFirst()
+                .map(TeamMember::getTeam);
+    }
+
+    /** Может ли участник пользоваться ботом: активен в команде. Деактивированные в админке — нет. */
+    @Transactional(readOnly = true)
+    public boolean canUseBot(Long teamId, String telegramUserId) {
+        if (teamId == null || telegramUserId == null || telegramUserId.isBlank()) return false;
+        if (teamMemberRepository.findByTeamId(teamId).isEmpty()) return true; // legacy: команда без записей
+        return teamMemberRepository.findByTeamIdAndTelegramUserId(teamId, telegramUserId)
+                .filter(TeamMember::isActive)
+                .isPresent();
+    }
+
     /** Обновить отображаемое имя участника (из админки). */
     @Transactional
     public void updateDisplayName(Long teamId, String telegramUserId, String displayName) {
